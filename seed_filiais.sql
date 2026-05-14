@@ -20,10 +20,12 @@ INSERT OR IGNORE INTO configuracao_filiais (filial, sigla, nome) VALUES
   (300, 'LEM', 'Londrina'),
   (302, 'LEM', 'Londrina — CD'),
   (200, 'PTA', 'Ponta Grossa'),
-  (202, 'PTA', 'Ponta Grossa — CD');
+  (202, 'PTA', 'Ponta Grossa — CD'),
+  (800, 'ALM', 'Almeria');
 
 INSERT OR IGNORE INTO configuracao_centros_custo (codigo, nome, filial) VALUES
   ('LOG-MGA', 'Logística Maringá',     100),
   ('ADM-MGA', 'Administrativo Maringá', 100),
   ('LOG-LEM', 'Logística Londrina',     300),
-  ('LOG-PTA', 'Logística Ponta Grossa', 200);
+  ('LOG-PTA', 'Logística Ponta Grossa', 200),
+  ('LOG-ALM', 'Logística Almeria',      800);
