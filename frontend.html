@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clavis — Cadastro Veicular (demo local)</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#7c3aed" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>
+  // PWA service worker
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(e => console.warn('SW falhou:', e));
+    });
+  }
+</script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .status-ativo      { background:#dcfce7; color:#166534; }
+  .status-manutencao { background:#fef3c7; color:#92400e; }
+  .status-vencido    { background:#fee2e2; color:#991b1b; }
+  .status-baixado    { background:#f3f4f6; color:#4b5563; }
+  .dropzone-active   { background:#eff6ff; border-color:#3b82f6; }
+  .field-critical    { background:#fffbeb; border-color:#f59e0b; }
+  .field-ok          { background:#f0fdf4; border-color:#16a34a; }
+  .scrollbar-thin::-webkit-scrollbar { width:6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:3px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800">
+
+<!-- ============== APP ============== -->
+<div id="app" class="hidden flex h-screen">
+
+  <aside class="hidden lg:flex w-60 bg-white border-r border-slate-200 flex-col">
+    <div class="px-5 py-5 border-b border-slate-200">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center text-white font-bold">C</div>
+        <div>
+          <div class="font-bold text-slate-900">Clavis</div>
+          <div class="text-[11px] text-slate-500 -mt-0.5">Napel · demo local</div>
+        </div>
+      </div>
+    </div>
+    <nav class="flex-1 overflow-y-auto p-3 text-sm scrollbar-thin">
+      <div class="text-[11px] uppercase text-slate-400 font-semibold px-2 mt-1 mb-1">Patrimônio</div>
+      <a class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
+        <i data-lucide="truck" class="w-4 h-4"></i> Veículos
+      </a>
+    </nav>
+    <div class="px-3 py-3 border-t border-slate-200 text-xs text-slate-500">
+      <div class="flex items-center gap-2"><i data-lucide="user" class="w-4 h-4"></i> <span id="user-info">—</span></div>
+    </div>
+  </aside>
+
+  <main class="flex-1 overflow-y-auto">
+    <header class="bg-white border-b border-slate-200 px-4 lg:px-8 py-4">
+      <div class="text-xs text-slate-500 mb-1">Patrimônio › Veículos</div>
+      <div class="flex items-center justify-between gap-4">
+        <h1 class="text-xl lg:text-2xl font-bold text-slate-900">Cadastro Veicular</h1>
+        <button onclick="showView('upload')" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2">
+          <i data-lucide="upload" class="w-4 h-4"></i><span class="hidden sm:inline">Novo via CRLV</span><span class="sm:hidden">Novo</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- ===== LISTAGEM ===== -->
+    <section id="view-listagem" class="p-4 lg:p-8">
+      <div id="kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6"></div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-3 mb-4 flex flex-wrap gap-2 items-center">
+        <div class="flex-1 min-w-[200px] relative">
+          <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+          <input id="f-busca" oninput="reload()" class="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="Placa, modelo ou RENAVAM…" />
+        </div>
+        <select id="f-filial" onchange="reload()" class="px-3 py-2 border border-slate-200 rounded-lg text-sm">
+          <option value="">Filial: todas</option>
+        </select>
+        <select id="f-status" onchange="reload()" class="px-3 py-2 border border-slate-200 rounded-lg text-sm">
+          <option value="">Status: todos</option>
+          <option>ativo</option><option>manutencao</option><option>vencido</option><option>baixado</option>
+        </select>
+      </div>
+
+      <!-- skeleton loading (item 6) -->
+      <div id="skeleton" class="hidden bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div class="divide-y divide-slate-100">
+          <div class="p-4 flex gap-4 animate-pulse">
+            <div class="h-4 w-20 bg-slate-200 rounded"></div>
+            <div class="h-4 w-40 bg-slate-200 rounded"></div>
+            <div class="h-4 w-16 bg-slate-200 rounded"></div>
+            <div class="h-4 w-24 bg-slate-200 rounded"></div>
+            <div class="h-4 w-20 bg-slate-200 rounded ml-auto"></div>
+          </div>
+          <div class="p-4 flex gap-4 animate-pulse">
+            <div class="h-4 w-20 bg-slate-200 rounded"></div>
+            <div class="h-4 w-40 bg-slate-200 rounded"></div>
+            <div class="h-4 w-16 bg-slate-200 rounded"></div>
+            <div class="h-4 w-24 bg-slate-200 rounded"></div>
+            <div class="h-4 w-20 bg-slate-200 rounded ml-auto"></div>
+          </div>
+          <div class="p-4 flex gap-4 animate-pulse">
+            <div class="h-4 w-20 bg-slate-200 rounded"></div>
+            <div class="h-4 w-40 bg-slate-200 rounded"></div>
+            <div class="h-4 w-16 bg-slate-200 rounded"></div>
+            <div class="h-4 w-24 bg-slate-200 rounded"></div>
+            <div class="h-4 w-20 bg-slate-200 rounded ml-auto"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tabela-wrap" class="hidden md:block bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-xs uppercase text-slate-500">
+            <tr>
+              <th class="text-left px-4 py-3">Placa</th>
+              <th class="text-left px-4 py-3">Modelo</th>
+              <th class="text-left px-4 py-3">Filial</th>
+              <th class="text-left px-4 py-3">CRLV vence</th>
+              <th class="text-left px-4 py-3">KM atual</th>
+              <th class="text-left px-4 py-3">Última troca óleo</th>
+              <th class="text-left px-4 py-3">Status</th>
+            </tr>
+          </thead>
+          <tbody id="tbody" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <div id="cards" class="md:hidden grid grid-cols-1 gap-3"></div>
+      <div id="empty" class="hidden bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center">
+        <i data-lucide="truck" class="w-12 h-12 mx-auto text-slate-300 mb-3"></i>
+        <div class="text-slate-700 font-medium">Nenhum veículo cadastrado ainda</div>
+        <div class="text-sm text-slate-500 mt-1">Clique em <strong>Novo via CRLV</strong> para começar.</div>
+      </div>
+    </section>
+
+    <!-- ===== DETALHE (item 2) ===== -->
+    <section id="view-detalhe" class="p-4 lg:p-8 hidden">
+      <button onclick="showView('listagem')" class="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-4">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i> voltar à listagem
+      </button>
+      <div id="detalhe-content"></div>
+    </section>
+
+    <!-- ===== UPLOAD ===== -->
+    <section id="view-upload" class="p-4 lg:p-8 hidden">
+      <button onclick="showView('listagem')" class="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-4">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i> voltar
+      </button>
+
+      <div id="vision-banner" class="bg-violet-50 border border-violet-200 rounded-xl p-4 mb-6 flex items-start gap-3">
+        <i data-lucide="sparkles" class="w-5 h-5 text-violet-600 mt-0.5"></i>
+        <div class="text-sm text-violet-900">
+          <strong>Modo IA:</strong> <span id="vision-mode">checando…</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-6">
+        <div class="md:col-span-3">
+          <label class="block text-xs font-semibold uppercase text-slate-500 mb-2">1. Envie o CRLV</label>
+          <label id="dropzone" class="block border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer hover:dropzone-active transition">
+            <input id="file-input" type="file" accept=".pdf,.jpg,.jpeg,.png" class="hidden" onchange="handleFile(this.files[0])" />
+            <i data-lucide="file-up" class="w-12 h-12 mx-auto text-slate-400 mb-3"></i>
+            <div class="font-medium text-slate-700">Arraste o CRLV aqui ou clique para escolher</div>
+            <div class="text-xs text-slate-500 mt-1">PDF, JPG ou PNG · máx 10MB</div>
+            <div class="mt-4 inline-block bg-slate-100 hover:bg-slate-200 px-4 py-2 rounded-lg text-sm font-medium">Selecionar arquivo</div>
+          </label>
+
+          <div id="preview" class="hidden mt-4 bg-white rounded-xl border border-slate-200 p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <i data-lucide="file-text" class="w-4 h-4"></i>
+                <span id="prev-filename">—</span>
+              </div>
+              <button onclick="resetUpload()" class="text-xs text-slate-500 hover:text-red-600">remover</button>
+            </div>
+            <div class="text-xs text-slate-500"><span id="prev-info">—</span></div>
+          </div>
+        </div>
+
+        <div class="md:col-span-2">
+          <label class="block text-xs font-semibold uppercase text-slate-500 mb-2">2. Confira os dados extraídos</label>
+
+          <div id="form-placeholder" class="bg-slate-50 border border-dashed border-slate-300 rounded-xl p-6 text-center text-sm text-slate-500">
+            <i data-lucide="hourglass" class="w-8 h-8 mx-auto mb-2 text-slate-400"></i>
+            Envie um documento para a IA preencher.
+          </div>
+
+          <div id="form-loading" class="hidden bg-white border border-slate-200 rounded-xl p-6 text-center">
+            <div class="animate-spin w-8 h-8 border-4 border-violet-600 border-t-transparent rounded-full mx-auto mb-3"></div>
+            <div class="text-sm font-medium text-slate-700">Lendo o CRLV…</div>
+            <div id="loading-fonte" class="text-xs text-slate-500 mt-1">Claude Vision</div>
+          </div>
+
+          <div id="form-filled" class="hidden bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+            <div id="alert-incertos" class="hidden bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900">
+              ⚠ IA com baixa confiança em: <strong id="lista-incertos"></strong>. Confirme antes de salvar.
+            </div>
+            <div>
+              <label class="text-xs text-slate-500">Placa</label>
+              <input id="f-placa" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono font-semibold mt-1" />
+            </div>
+            <div>
+              <label class="text-xs text-slate-500">RENAVAM</label>
+              <input id="f-renavam" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+            </div>
+            <div>
+              <label class="text-xs text-slate-500">Chassi</label>
+              <input id="f-chassi" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="text-xs text-slate-500">Marca</label>
+                <input id="f-marca" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+              </div>
+              <div>
+                <label class="text-xs text-slate-500">Modelo</label>
+                <input id="f-modelo" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="text-xs text-slate-500">Ano fab.</label>
+                <input id="f-anofab" type="number" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+              </div>
+              <div>
+                <label class="text-xs text-slate-500">Ano modelo</label>
+                <input id="f-anomodelo" type="number" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-slate-500">Vencimento CRLV</label>
+              <input id="f-venc" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="text-xs text-slate-500">Filial</label>
+                <select id="f-filial-form" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1"></select>
+              </div>
+              <div>
+                <label class="text-xs text-slate-500">Centro custo</label>
+                <select id="f-cc" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1"></select>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-slate-500">KM atual</label>
+              <input id="f-km" type="number" value="0" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+            </div>
+
+            <!-- Seção Manutenção (oil-change) -->
+            <div class="border-t pt-3 mt-3">
+              <button type="button" onclick="toggleManut()" class="flex items-center justify-between w-full text-xs font-semibold uppercase text-slate-500 hover:text-slate-700">
+                <span class="flex items-center gap-1"><i data-lucide="droplet" class="w-3.5 h-3.5"></i> Manutenção (oil-change)</span>
+                <i id="manut-chevron" data-lucide="chevron-down" class="w-4 h-4"></i>
+              </button>
+              <div id="manut-fields" class="hidden space-y-2 mt-3 bg-slate-50 p-3 rounded-lg">
+                <div class="text-[11px] text-slate-600 mb-2">
+                  Opcional — deixe em branco se o veículo ainda não entrou no programa de troca de óleo.
+                  Pode preencher depois pelo botão <strong>Editar</strong> na tela de detalhe.
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="text-xs text-slate-500">Intervalo (km)</label>
+                    <input id="f-intervalo-km" type="number" placeholder="ex: 5000" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-500">Intervalo (meses)</label>
+                    <input id="f-intervalo-meses" type="number" placeholder="ex: 6" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="text-xs text-slate-500">Última troca (km)</label>
+                    <input id="f-km-troca" type="number" placeholder="hodômetro" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-500">Última troca (data)</label>
+                    <input id="f-data-troca" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="text-xs text-slate-500">Margem aviso (km)</label>
+                    <input id="f-margem-km" type="number" placeholder="ex: 500" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-500">Margem aviso (dias)</label>
+                    <input id="f-margem-dias" type="number" placeholder="ex: 15" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button id="btn-salvar" onclick="salvarVeiculo()" class="w-full bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-lg text-sm font-medium flex items-center justify-center gap-2 mt-2">
+              <i data-lucide="save" class="w-4 h-4"></i> Salvar veículo
+            </button>
+            <div id="save-err" class="hidden text-xs text-red-600 text-center"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============== TOAST ============== -->
+<div id="toast" class="hidden fixed top-4 right-4 z-50 bg-emerald-600 text-white px-4 py-3 rounded-lg shadow-lg text-sm flex items-center gap-2">
+  <i data-lucide="check" class="w-4 h-4"></i> <span id="toast-msg"></span>
+</div>
+
+<script>
+const API = window.location.origin;
+const DEMO_PIN = '1234';
+let TOKEN = '';
+let USER  = null;
+let UPLOAD_PREVIEW = null;
+let FILIAIS = [];
+let CENTROS = [];
+
+function $(id) { return document.getElementById(id); }
+
+// ============== Formatação pt-BR (display only — API/storage continua ISO) ==============
+const TZ_BR = 'America/Sao_Paulo';
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  // aceita 'YYYY-MM-DD' ou ISO completo
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return iso;
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('pt-BR', {
+      timeZone: TZ_BR, day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+  } catch { return iso; }
+}
+
+function fmtKm(n) {
+  return (n || 0).toLocaleString('pt-BR');
+}
+
+// Invalida cache do SW pra GETs de API depois de mutações
+async function invalidateApiCache() {
+  if (!('caches' in window)) return;
+  try {
+    const names = await caches.keys();
+    for (const name of names) {
+      const cache = await caches.open(name);
+      const keys = await cache.keys();
+      await Promise.all(keys.filter(k => new URL(k.url).pathname.startsWith('/api/')).map(k => cache.delete(k)));
+    }
+  } catch (e) { console.warn('cache invalidate falhou', e); }
+}
+function api(path, opts={}) {
+  opts.headers = opts.headers || {};
+  if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (opts.json) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.json);
+    delete opts.json;
+  }
+  return fetch(API + path, opts).then(async r => {
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error(txt || r.statusText);
+    }
+    return r.json();
+  });
+}
+
+function toast(msg) {
+  $('toast-msg').textContent = msg;
+  $('toast').classList.remove('hidden');
+  setTimeout(() => $('toast').classList.add('hidden'), 3500);
+}
+
+async function autoLogin() {
+  const r = await fetch(API + '/api/auth/login', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pin: DEMO_PIN})
+  });
+  if (!r.ok) throw new Error('Falha no auto-login');
+  const data = await r.json();
+  TOKEN = data.token;
+  USER = data.user;
+}
+
+async function startApp() {
+  await autoLogin();
+  $('app').classList.remove('hidden');
+  $('app').classList.add('flex');
+
+  // health -> mostra modo IA
+  try {
+    const h = await fetch(API + '/api/patrimonio/health').then(r => r.json());
+    const real = h.checks.claude_vision === 'real';
+    const mode = real
+      ? `<strong>Claude Vision real</strong> (${h.checks.vision_model}) — extrai dados de CRLVs reais via IA. Custo: ~$0,004 por CRLV.`
+      : `<strong>Mock</strong> — sem ANTHROPIC_API_KEY, usando fixtures. Upload arquivos nomeados <code class="bg-white px-1 rounded">CRLV_HRH9F45.pdf</code>, <code class="bg-white px-1 rounded">CRLV_BXG3H21.jpg</code>, <code class="bg-white px-1 rounded">CRLV_PUE1A88.png</code>, <code class="bg-white px-1 rounded">CRLV_QWZ4567.pdf</code> ou <code class="bg-white px-1 rounded">CRLV_baixa_qualidade.jpg</code>.`;
+    $('vision-mode').innerHTML = mode;
+    $('vision-banner').className = real
+      ? 'bg-emerald-50 border border-emerald-200 rounded-xl p-4 mb-6 flex items-start gap-3'
+      : 'bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-start gap-3';
+    $('loading-fonte').textContent = real ? `Claude Vision real · ${h.checks.vision_model}` : 'Claude Vision (mock)';
+  } catch(e) {}
+  $('user-info').textContent = `${USER.nome} · filial ${USER.filial}`;
+
+  // carrega filiais
+  try {
+    const f = await api('/api/patrimonio/filiais');
+    FILIAIS = f.filiais;
+    CENTROS = f.centros_custo;
+    const fFilial = $('f-filial');
+    const fFilialForm = $('f-filial-form');
+    FILIAIS.forEach(x => {
+      fFilial.innerHTML += `<option value="${x.filial}">${x.sigla} — ${x.filial}</option>`;
+      fFilialForm.innerHTML += `<option value="${x.filial}">${x.sigla} — ${x.filial}</option>`;
+    });
+    refreshCentroCusto();
+    fFilialForm.addEventListener('change', refreshCentroCusto);
+  } catch (e) {
+    console.error(e);
+    if (e.message.includes('401')) logout();
+  }
+  reload();
+  lucide.createIcons();
+}
+
+function refreshCentroCusto() {
+  const filial = parseInt($('f-filial-form').value || 100);
+  const cc = $('f-cc');
+  cc.innerHTML = '';
+  CENTROS.filter(x => x.filial === filial).forEach(x => {
+    cc.innerHTML += `<option value="${x.codigo}">${x.nome}</option>`;
+  });
+}
+
+function showView(v) {
+  $('view-listagem').classList.toggle('hidden', v !== 'listagem');
+  $('view-upload').classList.toggle('hidden', v !== 'upload');
+  $('view-detalhe').classList.toggle('hidden', v !== 'detalhe');
+  if (v === 'listagem') reload();
+  if (v === 'upload') resetUpload();
+  lucide.createIcons();
+}
+
+async function reload() {
+  const params = new URLSearchParams();
+  if ($('f-filial').value) params.set('filial', $('f-filial').value);
+  if ($('f-status').value) params.set('status', $('f-status').value);
+  if ($('f-busca').value.trim()) params.set('busca', $('f-busca').value.trim());
+
+  // skeleton enquanto carrega
+  $('skeleton').classList.remove('hidden');
+  $('tabela-wrap').classList.add('hidden');
+  $('cards').classList.add('hidden');
+  $('empty').classList.add('hidden');
+
+  try {
+    // chama o endpoint fleet pra ter campos de manutenção
+    const fleet = await api('/api/v1/fleet/vehicles?' + params);
+    const veiculos = fleet.vehicles || [];
+    // KPIs derivados localmente
+    const hoje = new Date();
+    const ativos = veiculos.filter(v => v.ativo).length;
+    const vencendo = veiculos.filter(v => alertaVencimento(v.vencimento_crlv)).length;
+    const vencidos = veiculos.filter(v => {
+      const d = new Date(v.vencimento_crlv);
+      return d < hoje;
+    }).length;
+    const trocaPendente = veiculos.filter(v => {
+      // só conta como pendente se o veículo está no programa (tem config) e está vencendo/vencido
+      if (!v.data_ultima_troca || v.intervalo_meses == null) return false;
+      const ultima = new Date(v.data_ultima_troca);
+      const proxMes = new Date(ultima); proxMes.setMonth(proxMes.getMonth() + v.intervalo_meses);
+      const dias = (proxMes - hoje) / 86400000;
+      return dias <= (v.margem_dias_aviso ?? 15);
+    }).length;
+
+    renderKPIs({total: veiculos.length, ativos, vencendo_30d: vencendo, vencidos, troca_pendente: trocaPendente});
+    renderRows(veiculos);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    $('skeleton').classList.add('hidden');
+    $('tabela-wrap').classList.remove('hidden');
+    $('cards').classList.remove('hidden');
+  }
+}
+
+function renderKPIs(k) {
+  $('kpis').innerHTML = `
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Frota</div><div class="text-2xl font-bold text-slate-900 mt-1">${k.total}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Ativos</div><div class="text-2xl font-bold text-emerald-600 mt-1">${k.ativos}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">CRLV vence ≤30d</div><div class="text-2xl font-bold text-amber-600 mt-1">${k.vencendo_30d}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Troca óleo pendente</div><div class="text-2xl font-bold text-orange-600 mt-1">${k.troca_pendente || 0}</div></div>
+  `;
+}
+
+// status agregado da troca de óleo
+function statusTrocaOleo(v) {
+  if (!v.data_ultima_troca || v.intervalo_meses == null) {
+    return {label: 'não configurado', cls: 'bg-slate-100 text-slate-500'};
+  }
+  const hoje = new Date();
+  const ultima = new Date(v.data_ultima_troca);
+  const proxMes = new Date(ultima); proxMes.setMonth(proxMes.getMonth() + v.intervalo_meses);
+  const dias = Math.floor((proxMes - hoje) / 86400000);
+  const margem = v.margem_dias_aviso ?? 15;
+  if (dias < 0) return {label: `vencida há ${-dias}d`, cls: 'bg-red-100 text-red-700'};
+  if (dias <= margem) return {label: `vence em ${dias}d`, cls: 'bg-amber-100 text-amber-700'};
+  return {label: `em ${dias}d`, cls: 'bg-emerald-100 text-emerald-700'};
+}
+
+function alertaVencimento(crlv) {
+  const v = new Date(crlv);
+  const hoje = new Date();
+  const dias = (v - hoje) / 86400000;
+  return dias >= 0 && dias <= 30;
+}
+
+function renderRows(rows) {
+  const tbody = $('tbody'), cards = $('cards'), empty = $('empty');
+  if (rows.length === 0) {
+    empty.classList.remove('hidden');
+    tbody.innerHTML = '';
+    cards.innerHTML = '';
+    lucide.createIcons();
+    return;
+  }
+  empty.classList.add('hidden');
+  tbody.innerHTML = rows.map(v => {
+    const oleo = statusTrocaOleo(v);
+    const statusCls = v.ativo ? 'status-ativo' : 'status-baixado';
+    return `
+    <tr class="hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
+      <td class="px-4 py-3 font-mono font-semibold">${v.placa}</td>
+      <td class="px-4 py-3">${v.marca||''} ${v.modelo||''}</td>
+      <td class="px-4 py-3 text-slate-600">${v.filial_id}</td>
+      <td class="px-4 py-3 ${alertaVencimento(v.vencimento_crlv)?'text-amber-600 font-semibold':''}">${fmtDate(v.vencimento_crlv)}</td>
+      <td class="px-4 py-3 font-mono text-slate-600">${fmtKm(v.km_ultima_troca)}</td>
+      <td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded-full font-medium ${oleo.cls}">${oleo.label}</span></td>
+      <td class="px-4 py-3"><span class="${statusCls} text-xs px-2 py-0.5 rounded-full font-medium">${v.ativo?'ativo':'baixado'}</span></td>
+    </tr>`;
+  }).join('');
+  cards.innerHTML = rows.map(v => {
+    const oleo = statusTrocaOleo(v);
+    return `
+    <div class="bg-white rounded-xl border border-slate-200 p-4 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <div class="font-mono font-bold text-lg">${v.placa}</div>
+          <div class="text-sm text-slate-600">${v.marca||''} ${v.modelo||''}</div>
+        </div>
+        <span class="${v.ativo?'status-ativo':'status-baixado'} text-xs px-2 py-0.5 rounded-full font-medium">${v.ativo?'ativo':'baixado'}</span>
+      </div>
+      <div class="text-xs text-slate-500 grid grid-cols-2 gap-1 mt-2">
+        <div>Filial: <span class="text-slate-700">${v.filial_id}</span></div>
+        <div>Última troca: <span class="text-slate-700 font-mono">${fmtKm(v.km_ultima_troca)} km</span></div>
+        <div class="col-span-2 ${alertaVencimento(v.vencimento_crlv)?'text-amber-600 font-medium':''}">CRLV vence: ${fmtDate(v.vencimento_crlv)}</div>
+        <div class="col-span-2 mt-1"><span class="text-xs px-2 py-0.5 rounded-full font-medium ${oleo.cls}">Troca óleo: ${oleo.label}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+  lucide.createIcons();
+}
+
+async function abrirDetalhe(id) {
+  showView('detalhe');
+  $('detalhe-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
+  try {
+    const [veic, docs] = await Promise.all([
+      api('/api/v1/fleet/vehicles/' + id),
+      api('/api/v1/fleet/vehicles/' + id + '/documents'),
+    ]);
+    const oleo = statusTrocaOleo(veic);
+    const docCrlv = docs.documents.find(d => d.type === 'crlv');
+    const statusBadge = veic.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full font-medium">ativo</span>'
+                                   : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
+    const baixarBtn = veic.ativo ? `<button onclick="baixarVeiculo('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>` : '';
+    $('detalhe-content').innerHTML = `
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <div class="font-mono font-bold text-2xl">${veic.placa}</div>
+            <div class="text-slate-600 mt-1">${veic.marca} ${veic.modelo} · ${veic.ano||'—'}</div>
+          </div>
+          <div class="flex items-center gap-2">${statusBadge}${baixarBtn}</div>
+        </div>
+        <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm border-t pt-4">
+          <div><dt class="text-xs text-slate-500">Filial</dt><dd class="font-medium">${veic.filial_id}</dd></div>
+          <div><dt class="text-xs text-slate-500">Motorista</dt><dd class="font-medium">user ${veic.user_id}</dd></div>
+          <div><dt class="text-xs text-slate-500">RENAVAM</dt><dd class="font-mono text-sm">${veic.renavam||'—'}</dd></div>
+          <div><dt class="text-xs text-slate-500">Chassi</dt><dd class="font-mono text-sm">${veic.chassi||'—'}</dd></div>
+        </dl>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-white rounded-xl border border-slate-200 p-6" id="manut-card">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="droplet" class="w-4 h-4"></i> Manutenção (oil-change)</h3>
+            <button onclick="iniciarEdicaoManut('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1">
+              <i data-lucide="edit-2" class="w-3.5 h-3.5"></i> Editar
+            </button>
+          </div>
+          <dl class="space-y-2 text-sm" id="manut-view">
+            <div class="flex justify-between"><dt class="text-slate-500">Intervalo</dt><dd>${veic.intervalo_km != null ? fmtKm(veic.intervalo_km) + ' km' : '—'}${veic.intervalo_meses != null ? ' · ' + veic.intervalo_meses + ' meses' : ''}</dd></div>
+            <div class="flex justify-between"><dt class="text-slate-500">Última troca (km)</dt><dd class="font-mono">${veic.km_ultima_troca != null ? fmtKm(veic.km_ultima_troca) : '—'}</dd></div>
+            <div class="flex justify-between"><dt class="text-slate-500">Última troca (data)</dt><dd>${fmtDate(veic.data_ultima_troca)}</dd></div>
+            <div class="flex justify-between"><dt class="text-slate-500">Margem aviso</dt><dd>${veic.margem_km_aviso != null ? veic.margem_km_aviso + ' km' : '—'}${veic.margem_dias_aviso != null ? ' · ' + veic.margem_dias_aviso + ' dias' : ''}</dd></div>
+            <div class="flex justify-between pt-2 border-t"><dt class="text-slate-500">Status</dt><dd><span class="text-xs px-2 py-0.5 rounded-full font-medium ${oleo.cls}">${oleo.label}</span></dd></div>
+          </dl>
+        </div>
+
+        <div class="bg-white rounded-xl border border-slate-200 p-6">
+          <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="file-text" class="w-4 h-4"></i> Documentos</h3>
+          <div class="space-y-2 text-sm">
+            <div class="p-3 bg-slate-50 rounded-lg">
+              <div class="flex items-center justify-between">
+                <div class="flex-1">
+                  <div class="font-medium flex items-center gap-2">
+                    CRLV
+                    ${docCrlv?.fonte ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-normal">${docCrlv.fonte}</span>` : ''}
+                  </div>
+                  <div class="text-xs text-slate-500 mt-0.5">vence: ${fmtDate(docCrlv?.vencimento)} ${docCrlv?.dias_para_vencer != null ? '· '+docCrlv.dias_para_vencer+'d' : ''}</div>
+                  ${docCrlv?.filename_original ? `<div class="text-[10px] text-slate-400 mt-0.5 truncate" title="${docCrlv.filename_original}"><i data-lucide="paperclip" class="w-3 h-3 inline"></i> ${docCrlv.filename_original}</div>` : ''}
+                  ${docCrlv?.extraido_em ? `<div class="text-[10px] text-slate-400">extraído em ${fmtDateTime(docCrlv.extraido_em)}</div>` : ''}
+                </div>
+                <span class="text-xs px-2 py-0.5 rounded-full font-medium ${
+                  docCrlv?.status==='vencido'?'bg-red-100 text-red-700':
+                  docCrlv?.status==='vencendo'?'bg-amber-100 text-amber-700':
+                  'bg-emerald-100 text-emerald-700'}">${docCrlv?.status||'—'}</span>
+              </div>
+              ${docCrlv?.arquivo_disponivel ? `
+                <div class="flex gap-2 mt-3 pt-3 border-t border-slate-200">
+                  <button onclick="verDocumento('${docCrlv.upload_id}', true)" class="flex-1 text-xs bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg font-medium flex items-center justify-center gap-1">
+                    <i data-lucide="eye" class="w-3.5 h-3.5"></i> Visualizar
+                  </button>
+                  <button onclick="verDocumento('${docCrlv.upload_id}', false)" class="flex-1 text-xs bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg font-medium flex items-center justify-center gap-1">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Baixar
+                  </button>
+                </div>
+              ` : docCrlv?.upload_id ? `
+                <div class="text-[10px] text-red-500 mt-2"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i> Arquivo original não está mais no disco.</div>
+              ` : ''}
+            </div>
+            <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg text-slate-400">
+              <div class="font-medium">IPVA</div><span class="text-xs">não cadastrado</span>
+            </div>
+            <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg text-slate-400">
+              <div class="font-medium">Seguro</div><span class="text-xs">não cadastrado</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    lucide.createIcons();
+  } catch (e) {
+    $('detalhe-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
+  }
+}
+
+async function verDocumento(uploadId, inline) {
+  try {
+    const url = `${API}/api/patrimonio/uploads/${uploadId}?inline=${inline}`;
+    const r = await fetch(url, {headers: {'Authorization': 'Bearer ' + TOKEN}});
+    if (!r.ok) throw new Error(r.status === 403 ? 'Sem permissão (filial diferente)' : r.statusText);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    if (inline) {
+      window.open(objUrl, '_blank');
+    } else {
+      // força download
+      const a = document.createElement('a');
+      a.href = objUrl;
+      const dispo = r.headers.get('content-disposition') || '';
+      const m = dispo.match(/filename="([^"]+)"/);
+      a.download = m ? m[1] : 'crlv-' + uploadId;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+  } catch (e) {
+    alert('Erro: ' + e.message);
+  }
+}
+
+async function iniciarEdicaoManut(id) {
+  const veic = await api('/api/v1/fleet/vehicles/' + id);
+  const val = (v) => v == null ? '' : v;
+  $('manut-view').innerHTML = `
+    <div class="grid grid-cols-2 gap-2 text-sm">
+      <div>
+        <label class="text-xs text-slate-500">Intervalo (km)</label>
+        <input id="e-intervalo-km" type="number" value="${val(veic.intervalo_km)}" placeholder="ex: 5000" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Intervalo (meses)</label>
+        <input id="e-intervalo-meses" type="number" value="${val(veic.intervalo_meses)}" placeholder="ex: 6" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Última troca (km)</label>
+        <input id="e-km-troca" type="number" value="${val(veic.km_ultima_troca)}" placeholder="hodômetro" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Última troca (data)</label>
+        <input id="e-data-troca" type="date" value="${val(veic.data_ultima_troca)}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Margem aviso (km)</label>
+        <input id="e-margem-km" type="number" value="${val(veic.margem_km_aviso)}" placeholder="ex: 500" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Margem aviso (dias)</label>
+        <input id="e-margem-dias" type="number" value="${val(veic.margem_dias_aviso)}" placeholder="ex: 15" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+    </div>
+    <div class="flex gap-2 pt-3 mt-3 border-t">
+      <button onclick="abrirDetalhe('${id}')" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+      <button id="btn-salvar-manut" onclick="salvarEdicaoManut('${id}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+    </div>
+    <div id="manut-err" class="hidden text-xs text-red-600 text-center mt-2"></div>
+  `;
+  lucide.createIcons();
+}
+
+async function salvarEdicaoManut(id) {
+  const btn = $('btn-salvar-manut');
+  btn.disabled = true; btn.classList.add('opacity-50');
+  $('manut-err').classList.add('hidden');
+  const body = {
+    intervalo_km: parseInt($('e-intervalo-km').value),
+    intervalo_meses: parseInt($('e-intervalo-meses').value),
+    km_ultima_troca: parseInt($('e-km-troca').value),
+    data_ultima_troca: $('e-data-troca').value || null,
+    margem_km_aviso: parseInt($('e-margem-km').value),
+    margem_dias_aviso: parseInt($('e-margem-dias').value),
+  };
+  // remove nulos pra não enviar (PATCH parcial)
+  Object.keys(body).forEach(k => (body[k] === null || isNaN(body[k])) && delete body[k]);
+
+  try {
+    const r = await fetch(API + '/api/v1/fleet/vehicles/' + id, {
+      method: 'PATCH',
+      headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    toast('Manutenção atualizada.');
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) {
+    $('manut-err').textContent = 'Erro: ' + e.message.substring(0, 200);
+    $('manut-err').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+async function baixarVeiculo(id) {
+  if (!confirm('Baixar este veículo? Ele some das listagens ativas (soft-delete).')) return;
+  try {
+    await fetch(API + '/api/patrimonio/veiculos/' + id, {
+      method: 'DELETE',
+      headers: {'Authorization': 'Bearer ' + TOKEN},
+    }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+    toast('Veículo baixado.');
+    await invalidateApiCache();
+    showView('listagem');
+  } catch (e) {
+    alert('Erro: ' + e.message);
+  }
+}
+
+async function handleFile(file) {
+  if (!file) return;
+  $('prev-filename').textContent = file.name;
+  $('prev-info').textContent = `${(file.size/1024).toFixed(0)} KB · ${file.type||'?'}`;
+  $('dropzone').classList.add('hidden');
+  $('preview').classList.remove('hidden');
+  $('form-placeholder').classList.add('hidden');
+  $('form-loading').classList.remove('hidden');
+  $('form-filled').classList.add('hidden');
+  lucide.createIcons();
+
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(API + '/api/patrimonio/vision/extract', {
+      method:'POST',
+      headers: {'Authorization': 'Bearer ' + TOKEN},
+      body: fd
+    });
+    if (!r.ok) throw new Error(await r.text());
+    UPLOAD_PREVIEW = await r.json();
+    fillForm(UPLOAD_PREVIEW);
+  } catch (e) {
+    alert('Erro Vision: ' + e.message);
+    resetUpload();
+  }
+}
+
+function fillForm(p) {
+  $('form-loading').classList.add('hidden');
+  $('form-filled').classList.remove('hidden');
+  const d = p.dados_extraidos;
+  $('f-placa').value   = d.placa || '';
+  $('f-renavam').value = d.renavam || '';
+  $('f-chassi').value  = d.chassi || '';
+  $('f-marca').value   = d.marca || '';
+  $('f-modelo').value  = d.modelo || '';
+  $('f-anofab').value    = d.ano_fabricacao || '';
+  $('f-anomodelo').value = d.ano_modelo || '';
+  $('f-venc').value    = d.vencimento_crlv || '';
+
+  // marca campos com baixa confiança
+  ['f-placa','f-renavam','f-chassi','f-venc'].forEach(id => {
+    $(id).classList.remove('field-critical','field-ok','border-slate-200');
+    $(id).classList.add('border');
+  });
+  const map = {placa:'f-placa', renavam:'f-renavam', chassi:'f-chassi', vencimento_crlv:'f-venc'};
+  Object.entries(map).forEach(([campo, id]) => {
+    const c = (p.confidence||{})[campo] ?? 1;
+    if (c < 0.85) $(id).classList.add('field-critical');
+    else $(id).classList.add('field-ok');
+  });
+
+  if (p.campos_incertos && p.campos_incertos.length) {
+    $('alert-incertos').classList.remove('hidden');
+    $('lista-incertos').textContent = p.campos_incertos.join(', ');
+  } else {
+    $('alert-incertos').classList.add('hidden');
+  }
+  lucide.createIcons();
+}
+
+function resetUpload() {
+  UPLOAD_PREVIEW = null;
+  $('file-input').value = '';
+  $('dropzone').classList.remove('hidden');
+  $('preview').classList.add('hidden');
+  $('form-placeholder').classList.remove('hidden');
+  $('form-loading').classList.add('hidden');
+  $('form-filled').classList.add('hidden');
+  $('save-err').classList.add('hidden');
+  lucide.createIcons();
+}
+
+function toggleManut() {
+  const f = $('manut-fields');
+  const ch = $('manut-chevron');
+  const isHidden = f.classList.contains('hidden');
+  f.classList.toggle('hidden', !isHidden);
+  ch.setAttribute('data-lucide', isHidden ? 'chevron-up' : 'chevron-down');
+  lucide.createIcons();
+}
+
+async function salvarVeiculo() {
+  if (!UPLOAD_PREVIEW) return;
+  $('save-err').classList.add('hidden');
+  $('btn-salvar').disabled = true;
+  $('btn-salvar').classList.add('opacity-50');
+
+  const body = {
+    upload_id: UPLOAD_PREVIEW.upload_id,
+    placa: $('f-placa').value.toUpperCase().replace(/[-\s]/g,''),
+    renavam: $('f-renavam').value,
+    chassi: $('f-chassi').value.toUpperCase(),
+    marca: $('f-marca').value,
+    modelo: $('f-modelo').value,
+    ano_fabricacao: parseInt($('f-anofab').value) || null,
+    ano_modelo: parseInt($('f-anomodelo').value) || null,
+    vencimento_crlv: $('f-venc').value,
+    filial: parseInt($('f-filial-form').value),
+    centro_custo: $('f-cc').value,
+    km_atual: parseInt($('f-km').value) || 0,
+    dados_raw: UPLOAD_PREVIEW.dados_extraidos,
+    fonte: UPLOAD_PREVIEW.fonte,
+    filename_original: UPLOAD_PREVIEW.filename,
+  };
+  // manutenção (opcional — só envia o que o usuário digitou)
+  const optInt = (id) => { const v = $(id).value; return v === '' ? null : parseInt(v); };
+  const manut = {
+    intervalo_km: optInt('f-intervalo-km'),
+    intervalo_meses: optInt('f-intervalo-meses'),
+    km_ultima_troca: optInt('f-km-troca'),
+    data_ultima_troca: $('f-data-troca').value || null,
+    margem_km_aviso: optInt('f-margem-km'),
+    margem_dias_aviso: optInt('f-margem-dias'),
+  };
+  Object.entries(manut).forEach(([k, v]) => { if (v !== null && !isNaN(v)) body[k] = v; });
+
+  try {
+    const r = await fetch(API + '/api/patrimonio/veiculos/cadastrar', {
+      method:'POST',
+      headers: {
+        'Authorization': 'Bearer ' + TOKEN,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': UPLOAD_PREVIEW.upload_id,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    toast(`Veículo ${data.placa} salvo!`);
+    await invalidateApiCache();
+    showView('listagem');
+  } catch (e) {
+    $('save-err').textContent = 'Erro: ' + e.message.substring(0,200);
+    $('save-err').classList.remove('hidden');
+  } finally {
+    $('btn-salvar').disabled = false;
+    $('btn-salvar').classList.remove('opacity-50');
+  }
+}
+
+// drag & drop
+window.addEventListener('DOMContentLoaded', () => {
+  const dz = $('dropzone');
+  ['dragover','dragenter'].forEach(ev => dz?.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add('dropzone-active');
+  }));
+  ['dragleave','drop'].forEach(ev => dz?.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove('dropzone-active');
+  }));
+  dz?.addEventListener('drop', e => {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+  });
+
+  startApp().catch(e => alert('Erro ao iniciar: ' + e.message));
+  lucide.createIcons();
+});
+</script>
+</body>
+</html>

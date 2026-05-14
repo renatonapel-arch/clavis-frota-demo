@@ -1,0 +1,73 @@
+{
+  "_doc": "Fixtures de respostas mockadas do Claude Vision para CRLVs. Cada chave é um nome de arquivo que o front pode 'subir' (na demo local não há OCR real). A 5ª resposta intencionalmente tem campos com confiança baixa para forçar o fluxo de confirmação manual.",
+  "CRLV_HRH9F45.pdf": {
+    "placa": "HRH9F45",
+    "renavam": "01234567890",
+    "chassi": "9BWHE21JX24060831",
+    "marca": "VOLKSWAGEN",
+    "modelo": "CONSTELLATION 24.280",
+    "ano_fabricacao": 2024,
+    "ano_modelo": 2024,
+    "cor": "BRANCA",
+    "combustivel": "DIESEL",
+    "cilindradas": 6870,
+    "vencimento_crlv": "2026-08-31",
+    "confidence": {"placa": 0.99, "renavam": 0.99, "chassi": 0.98, "vencimento_crlv": 0.97}
+  },
+  "CRLV_BXG3H21.jpg": {
+    "placa": "BXG3H21",
+    "renavam": "02345678901",
+    "chassi": "9BM958343MB123456",
+    "marca": "MERCEDES-BENZ",
+    "modelo": "ACTROS 2651",
+    "ano_fabricacao": 2022,
+    "ano_modelo": 2023,
+    "cor": "AZUL",
+    "combustivel": "DIESEL",
+    "cilindradas": 12800,
+    "vencimento_crlv": "2026-06-05",
+    "confidence": {"placa": 0.98, "renavam": 0.97, "chassi": 0.96, "vencimento_crlv": 0.95}
+  },
+  "CRLV_PUE1A88.png": {
+    "placa": "PUE1A88",
+    "renavam": "03456789012",
+    "chassi": "9BSR4X20003456789",
+    "marca": "SCANIA",
+    "modelo": "R 450",
+    "ano_fabricacao": 2023,
+    "ano_modelo": 2023,
+    "cor": "VERMELHA",
+    "combustivel": "DIESEL",
+    "cilindradas": 12740,
+    "vencimento_crlv": "2026-09-12",
+    "confidence": {"placa": 0.96, "renavam": 0.98, "chassi": 0.97, "vencimento_crlv": 0.99}
+  },
+  "CRLV_QWZ4567.pdf": {
+    "placa": "QWZ4567",
+    "renavam": "04567890123",
+    "chassi": "YV2RT40A8GB789012",
+    "marca": "VOLVO",
+    "modelo": "FH 540",
+    "ano_fabricacao": 2021,
+    "ano_modelo": 2022,
+    "cor": "PRETA",
+    "combustivel": "DIESEL",
+    "cilindradas": 12800,
+    "vencimento_crlv": "2026-05-20",
+    "confidence": {"placa": 0.94, "renavam": 0.93, "chassi": 0.95, "vencimento_crlv": 0.97}
+  },
+  "CRLV_baixa_qualidade.jpg": {
+    "placa": "JKL1B23",
+    "renavam": "05678901234",
+    "chassi": "9BFXXX12345678901",
+    "marca": "IVECO",
+    "modelo": "TECTOR 240",
+    "ano_fabricacao": 2018,
+    "ano_modelo": 2018,
+    "cor": "BRANCA",
+    "combustivel": "DIESEL",
+    "cilindradas": 5900,
+    "vencimento_crlv": "2026-05-08",
+    "confidence": {"placa": 0.72, "renavam": 0.95, "chassi": 0.68, "vencimento_crlv": 0.91}
+  }
+}

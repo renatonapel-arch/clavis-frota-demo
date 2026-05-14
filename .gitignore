@@ -1,0 +1,13 @@
+demo.sqlite3
+demo.sqlite3-journal
+uploads/
+data/
+data-test/
+__pycache__/
+*.pyc
+.pytest_cache/
+_probe.py
+seed_veiculos.sql.disabled
+.env
+.env.local
+*.log

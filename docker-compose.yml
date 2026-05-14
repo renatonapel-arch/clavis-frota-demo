@@ -1,0 +1,27 @@
+# Paridade local com o que vai rodar no Coolify.
+# Subir: docker compose up --build
+# Acessar: http://127.0.0.1:8761
+# Dados persistem em ./data/ (gitignored)
+services:
+  frota:
+    build: .
+    container_name: clavis-frota-demo
+    ports:
+      - "8761:8761"
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+      PORT: 8761
+      DEMO_PIN: ${DEMO_PIN:-1234}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      USE_REAL_VISION: ${USE_REAL_VISION:-true}
+      VISION_MODEL: ${VISION_MODEL:-claude-haiku-4-5}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8761/api/patrimonio/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
