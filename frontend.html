@@ -584,13 +584,19 @@ async function abrirDetalhe(id) {
                                    : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
     const baixarBtn = veic.ativo ? `<button onclick="baixarVeiculo('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>` : '';
     $('detalhe-content').innerHTML = `
-      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4" id="header-card">
         <div class="flex items-start justify-between mb-4">
           <div>
             <div class="font-mono font-bold text-2xl">${veic.placa}</div>
             <div class="text-slate-600 mt-1">${veic.marca} ${veic.modelo} · ${veic.ano||'—'}</div>
           </div>
-          <div class="flex items-center gap-2">${statusBadge}${baixarBtn}</div>
+          <div class="flex items-center gap-2">
+            ${statusBadge}
+            <button onclick="iniciarEdicaoDados('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1">
+              <i data-lucide="edit-2" class="w-4 h-4"></i> Editar dados
+            </button>
+            ${baixarBtn}
+          </div>
         </div>
         <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm border-t pt-4">
           <div><dt class="text-xs text-slate-500">Filial</dt><dd class="font-medium">${veic.filial_id}</dd></div>
@@ -662,6 +668,158 @@ async function abrirDetalhe(id) {
     lucide.createIcons();
   } catch (e) {
     $('detalhe-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
+  }
+}
+
+async function iniciarEdicaoDados(id) {
+  // pega dados COMPLETOS via /api/patrimonio/veiculos/{id} (não só fleet)
+  const veic = await api('/api/patrimonio/veiculos/' + id);
+  const card = $('header-card');
+  // monta dropdown filial
+  const filialOptions = FILIAIS.map(f =>
+    `<option value="${f.filial}" ${f.filial === veic.filial ? 'selected' : ''}>${f.sigla} — ${f.filial}</option>`
+  ).join('');
+  // centros do filial atual
+  const centrosOptions = CENTROS.filter(c => c.filial === veic.filial)
+    .map(c => `<option value="${c.codigo}" ${c.codigo === veic.centro_custo ? 'selected' : ''}>${c.nome}</option>`)
+    .join('');
+  card.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="edit-2" class="w-4 h-4"></i> Editar dados do veículo</h3>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+      <div>
+        <label class="text-xs text-slate-500">Placa</label>
+        <input id="ev-placa" value="${veic.placa||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono font-semibold mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">RENAVAM</label>
+        <input id="ev-renavam" value="${veic.renavam||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div class="col-span-2">
+        <label class="text-xs text-slate-500">Chassi</label>
+        <input id="ev-chassi" value="${veic.chassi||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Marca</label>
+        <input id="ev-marca" value="${veic.marca||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Modelo</label>
+        <input id="ev-modelo" value="${veic.modelo||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Ano fab.</label>
+        <input id="ev-anofab" type="number" value="${veic.ano_fabricacao||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Ano modelo</label>
+        <input id="ev-anomodelo" type="number" value="${veic.ano_modelo||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Cor</label>
+        <input id="ev-cor" value="${veic.cor||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Combustível</label>
+        <input id="ev-combustivel" value="${veic.combustivel||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Cilindradas (cm³)</label>
+        <input id="ev-cilindradas" type="number" value="${veic.cilindradas||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">KM atual</label>
+        <input id="ev-km" type="number" value="${veic.km_atual||0}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Vencimento CRLV</label>
+        <input id="ev-venc" type="date" value="${veic.vencimento_crlv||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Filial</label>
+        <select id="ev-filial" onchange="atualizarCentrosNoEdit()" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1">${filialOptions}</select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Centro custo</label>
+        <select id="ev-cc" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1">${centrosOptions}</select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Responsável (user_id)</label>
+        <input id="ev-resp-id" type="number" value="${veic.responsavel_user_id||1}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div class="col-span-2">
+        <label class="text-xs text-slate-500">Responsável (nome)</label>
+        <input id="ev-resp-nome" value="${veic.responsavel_nome||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Status</label>
+        <select id="ev-status" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1">
+          ${['ativo','manutencao','vencido','baixado'].map(s => `<option ${s === veic.status ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="flex gap-2 pt-4 mt-4 border-t">
+      <button onclick="abrirDetalhe('${id}')" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+      <button id="btn-salvar-dados" onclick="salvarEdicaoDados('${id}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+    </div>
+    <div id="dados-err" class="hidden text-xs text-red-600 text-center mt-2"></div>
+  `;
+  lucide.createIcons();
+}
+
+function atualizarCentrosNoEdit() {
+  const filial = parseInt($('ev-filial').value);
+  const cc = $('ev-cc');
+  cc.innerHTML = CENTROS.filter(c => c.filial === filial)
+    .map(c => `<option value="${c.codigo}">${c.nome}</option>`).join('') ||
+    '<option value="">(sem centros nesta filial)</option>';
+}
+
+async function salvarEdicaoDados(id) {
+  const btn = $('btn-salvar-dados');
+  btn.disabled = true; btn.classList.add('opacity-50');
+  $('dados-err').classList.add('hidden');
+  const val = (el) => el.value === '' ? null : el.value;
+  const intVal = (el) => el.value === '' ? null : parseInt(el.value);
+  const body = {
+    placa: val($('ev-placa')).toUpperCase().replace(/[-\s]/g,''),
+    renavam: val($('ev-renavam')),
+    chassi: val($('ev-chassi')) ? val($('ev-chassi')).toUpperCase() : null,
+    marca: val($('ev-marca')),
+    modelo: val($('ev-modelo')),
+    ano_fabricacao: intVal($('ev-anofab')),
+    ano_modelo: intVal($('ev-anomodelo')),
+    cor: val($('ev-cor')),
+    combustivel: val($('ev-combustivel')),
+    cilindradas: intVal($('ev-cilindradas')),
+    km_atual: intVal($('ev-km')),
+    vencimento_crlv: val($('ev-venc')),
+    filial: intVal($('ev-filial')),
+    centro_custo: val($('ev-cc')),
+    responsavel_user_id: intVal($('ev-resp-id')),
+    responsavel_nome: val($('ev-resp-nome')),
+    status: val($('ev-status')),
+  };
+  Object.keys(body).forEach(k => { if (body[k] === null || (typeof body[k]==='number' && isNaN(body[k]))) delete body[k]; });
+
+  try {
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + id, {
+      method: 'PATCH',
+      headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error(r.status + ' ' + txt.substring(0, 200));
+    }
+    toast('Dados do veículo atualizados.');
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) {
+    $('dados-err').textContent = 'Erro: ' + e.message;
+    $('dados-err').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
   }
 }
 

@@ -699,6 +699,142 @@ def obter_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
     return data
 
 
+class VeiculoFullPatch(BaseModel):
+    """PATCH parcial pra editar QUALQUER campo do veículo.
+    Diferente do PATCH /fleet/{id} (que é só manutenção pro oil-change),
+    esse aqui edita campos base: filial, placa, modelo, responsável etc.
+    """
+    # Bens
+    filial: Optional[int] = None
+    centro_custo: Optional[str] = None
+    responsavel_user_id: Optional[int] = None
+    responsavel_nome: Optional[str] = None
+    status: Optional[str] = None
+    # Veículos
+    placa: Optional[str] = None
+    renavam: Optional[str] = None
+    chassi: Optional[str] = None
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    ano_fabricacao: Optional[int] = Field(default=None, ge=1900, le=2100)
+    ano_modelo: Optional[int] = Field(default=None, ge=1900, le=2100)
+    cor: Optional[str] = None
+    combustivel: Optional[str] = None
+    cilindradas: Optional[int] = Field(default=None, ge=0)
+    vencimento_crlv: Optional[str] = None
+    km_atual: Optional[int] = Field(default=None, ge=0)
+
+
+_BENS_FIELDS = {"filial", "centro_custo", "responsavel_user_id", "responsavel_nome", "status"}
+_VEICULOS_FIELDS = {"placa", "renavam", "chassi", "marca", "modelo", "ano_fabricacao",
+                    "ano_modelo", "cor", "combustivel", "cilindradas", "vencimento_crlv", "km_atual"}
+
+
+@app.patch("/api/patrimonio/veiculos/{bem_id}")
+def editar_veiculo(
+    bem_id: str,
+    body: VeiculoFullPatch,
+    authorization: Optional[str] = Header(None),
+):
+    """Edita campos base do veículo. Valida placa/RENAVAM/chassi se mudarem.
+    Verifica duplicata placa+filial (excluindo self)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(422, "body vazio — informe ao menos um campo")
+
+    # normaliza placa
+    if "placa" in updates:
+        updates["placa"] = updates["placa"].upper().replace("-", "").replace(" ", "")
+
+    # validações se mudar placa/renavam/chassi
+    if any(k in updates for k in ("placa", "renavam", "chassi", "vencimento_crlv")):
+        # busca atual pra fazer merge e validar
+        conn = db()
+        atual = conn.execute("""
+            SELECT v.placa, v.renavam, v.chassi, v.vencimento_crlv
+            FROM veiculos v JOIN bens b ON b.cod_interno = v.bem_id
+            WHERE v.bem_id = ? AND b.deleted_at IS NULL
+        """, (bem_id,)).fetchone()
+        conn.close()
+        if not atual:
+            raise HTTPException(404, "Veículo não encontrado")
+        merged = {
+            "placa": updates.get("placa", atual["placa"]),
+            "renavam": updates.get("renavam", atual["renavam"]),
+            "chassi": updates.get("chassi", atual["chassi"]),
+            "vencimento_crlv": updates.get("vencimento_crlv", atual["vencimento_crlv"]),
+        }
+        erros = validar_dados(merged)
+        if erros:
+            raise HTTPException(422, {"erros": erros})
+
+    # valida status enum se mudou
+    if "status" in updates and updates["status"] not in ("ativo", "manutencao", "vencido", "baixado"):
+        raise HTTPException(422, "status deve ser: ativo, manutencao, vencido ou baixado")
+
+    # valida data ISO se mudou
+    if "vencimento_crlv" in updates:
+        try:
+            date.fromisoformat(updates["vencimento_crlv"])
+        except ValueError:
+            raise HTTPException(422, "vencimento_crlv deve ser YYYY-MM-DD")
+
+    # se mudou placa OU filial, checa duplicata
+    if "placa" in updates or "filial" in updates:
+        conn = db()
+        atual = conn.execute("""
+            SELECT v.placa, b.filial FROM veiculos v JOIN bens b ON b.cod_interno = v.bem_id
+            WHERE v.bem_id = ?
+        """, (bem_id,)).fetchone()
+        conn.close()
+        nova_placa = updates.get("placa", atual["placa"]) if atual else updates.get("placa")
+        nova_filial = updates.get("filial", atual["filial"]) if atual else updates.get("filial")
+        conn = db()
+        dup = conn.execute("""
+            SELECT b.cod_interno FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
+            WHERE v.placa = ? AND b.filial = ? AND b.deleted_at IS NULL AND b.cod_interno != ?
+        """, (nova_placa, nova_filial, bem_id)).fetchone()
+        conn.close()
+        if dup:
+            raise HTTPException(409, f"Placa {nova_placa} já cadastrada na filial {nova_filial}")
+
+    # split entre bens e veiculos
+    bens_upd = {k: v for k, v in updates.items() if k in _BENS_FIELDS}
+    veiculos_upd = {k: v for k, v in updates.items() if k in _VEICULOS_FIELDS}
+
+    conn = db()
+    cur = conn.cursor()
+    try:
+        ts = now_iso()
+        if veiculos_upd:
+            sets = ", ".join(f"{k} = ?" for k in veiculos_upd) + ", updated_at = ?"
+            params = list(veiculos_upd.values()) + [ts, bem_id]
+            cur.execute(f"UPDATE veiculos SET {sets} WHERE bem_id = ?", params)
+            if cur.rowcount == 0:
+                conn.rollback(); conn.close()
+                raise HTTPException(404, "Veículo não encontrado")
+        if bens_upd:
+            sets = ", ".join(f"{k} = ?" for k in bens_upd) + ", updated_at = ?"
+            params = list(bens_upd.values()) + [ts, bem_id]
+            cur.execute(f"UPDATE bens SET {sets} WHERE cod_interno = ?", params)
+            if cur.rowcount == 0:
+                conn.rollback(); conn.close()
+                raise HTTPException(404, "Veículo não encontrado")
+        # toca updated_at de ambos mesmo se só um foi mudado
+        cur.execute("UPDATE bens SET updated_at = ? WHERE cod_interno = ?", (ts, bem_id))
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        raise HTTPException(409, f"Conflito de unique constraint: {e}")
+    finally:
+        conn.close()
+
+    return {"id": bem_id, "updated": updates, "updated_at": now_iso()}
+
+
 @app.delete("/api/patrimonio/veiculos/{bem_id}")
 def baixar_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
     user = auth_check(authorization)
