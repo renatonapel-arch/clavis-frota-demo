@@ -1,11 +1,12 @@
 // Service Worker — Cadastro Veicular (demo local)
 // Estratégia:
-//   - HTML/JS/CSS estáticos: cache-first com fallback de rede
-//   - GET de API (listagens, detalhes): stale-while-revalidate
+//   - Same-origin (HTML, JS, /api, sw, manifest): NETWORK-FIRST
+//     → sempre pega a versão nova quando online; cache só vira fallback offline.
+//     (Antes era cache-first no HTML → navegador ficava preso em versão antiga.)
+//   - CDN cross-origin (tailwind, lucide): cache-first (libs não mudam)
 //   - POST/PATCH/DELETE: network-only (não cacheia mutações)
-//   - Offline: IndexedDB sync queue (TODO em prod — aqui só cache simples)
 
-const CACHE_NAME = 'cadastro-veicular-v2';
+const CACHE_NAME = 'cadastro-veicular-v3';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -36,9 +37,9 @@ self.addEventListener('fetch', (ev) => {
   // Não cacheia mutações
   if (req.method !== 'GET') return;
 
-  // API GET → network-first (sempre fresco online; cache só como fallback offline)
-  // Antes era stale-while-revalidate → UI ficava com dado velho após cadastrar.
-  if (url.pathname.startsWith('/api/')) {
+  // Same-origin (HTML principal, /api, sw.js, manifest) → NETWORK-FIRST.
+  // Online: sempre versão nova. Offline: cai pro cache.
+  if (url.origin === self.location.origin) {
     ev.respondWith(
       fetch(req)
         .then((resp) => {
@@ -50,23 +51,29 @@ self.addEventListener('fetch', (ev) => {
         })
         .catch(() =>
           caches.match(req).then((cached) =>
-            cached || new Response(JSON.stringify({error: 'offline'}), {
-              status: 503, headers: {'Content-Type': 'application/json'},
-            })
+            cached || new Response(
+              url.pathname.startsWith('/api/')
+                ? JSON.stringify({error: 'offline'})
+                : 'offline',
+              {status: 503, headers: {'Content-Type':
+                url.pathname.startsWith('/api/') ? 'application/json' : 'text/plain'}}
+            )
           )
         )
     );
     return;
   }
 
-  // estáticos → cache-first
+  // CDN cross-origin (tailwind, lucide) → cache-first (libs estáveis)
   ev.respondWith(
-    caches.match(req).then((cached) => cached || fetch(req).then((resp) => {
-      if (resp.ok && url.origin === self.location.origin) {
-        const clone = resp.clone();
-        caches.open(CACHE_NAME).then((c) => c.put(req, clone));
-      }
-      return resp;
-    }))
+    caches.match(req).then((cached) =>
+      cached || fetch(req).then((resp) => {
+        if (resp.ok) {
+          const clone = resp.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, clone));
+        }
+        return resp;
+      }).catch(() => cached)
+    )
   );
 });
