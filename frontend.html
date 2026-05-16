@@ -31,6 +31,28 @@
 </head>
 <body class="bg-slate-50 text-slate-800">
 
+<!-- ============== LOGIN ============== -->
+<div id="login" class="fixed inset-0 z-50 bg-slate-900 flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8">
+    <div class="flex items-center gap-2 mb-6">
+      <div class="w-10 h-10 rounded-lg bg-violet-600 flex items-center justify-center text-white font-bold text-xl">C</div>
+      <div>
+        <div class="font-bold text-slate-900 text-lg">Clavis</div>
+        <div class="text-xs text-slate-500 -mt-0.5">Cadastro Veicular</div>
+      </div>
+    </div>
+    <label class="text-sm font-medium text-slate-700">Digite seu PIN de acesso</label>
+    <input id="login-pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off"
+           class="w-full border border-slate-300 rounded-lg px-4 py-3 mt-2 text-center text-2xl tracking-[0.3em] font-mono"
+           placeholder="••••" onkeydown="if(event.key==='Enter') fazerLogin()" />
+    <button onclick="fazerLogin()" class="w-full bg-violet-600 hover:bg-violet-700 text-white py-3 rounded-lg font-medium mt-4">
+      Entrar
+    </button>
+    <div id="login-erro" class="hidden text-sm text-red-600 text-center mt-3"></div>
+    <div class="text-xs text-slate-400 text-center mt-4">Cada funcionário tem seu PIN. Peça ao gestor.</div>
+  </div>
+</div>
+
 <!-- ============== APP ============== -->
 <div id="app" class="hidden flex h-screen">
 
@@ -40,18 +62,24 @@
         <div class="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center text-white font-bold">C</div>
         <div>
           <div class="font-bold text-slate-900">Clavis</div>
-          <div class="text-[11px] text-slate-500 -mt-0.5">Napel · demo local</div>
+          <div class="text-[11px] text-slate-500 -mt-0.5">Napel</div>
         </div>
       </div>
     </div>
     <nav class="flex-1 overflow-y-auto p-3 text-sm scrollbar-thin">
       <div class="text-[11px] uppercase text-slate-400 font-semibold px-2 mt-1 mb-1">Patrimônio</div>
-      <a class="flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
+      <a onclick="showView('listagem')" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
         <i data-lucide="truck" class="w-4 h-4"></i> Veículos
+      </a>
+      <a id="nav-usuarios" onclick="abrirUsuarios()" class="hidden cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 text-slate-700">
+        <i data-lucide="users" class="w-4 h-4"></i> Usuários
       </a>
     </nav>
     <div class="px-3 py-3 border-t border-slate-200 text-xs text-slate-500">
-      <div class="flex items-center gap-2"><i data-lucide="user" class="w-4 h-4"></i> <span id="user-info">—</span></div>
+      <div class="flex items-center justify-between gap-2">
+        <span class="flex items-center gap-2 min-w-0"><i data-lucide="user" class="w-4 h-4 shrink-0"></i> <span id="user-info" class="truncate">—</span></span>
+        <button onclick="logout()" title="Sair" class="text-slate-400 hover:text-red-600 shrink-0"><i data-lucide="log-out" class="w-4 h-4"></i></button>
+      </div>
     </div>
   </aside>
 
@@ -141,6 +169,20 @@
         <i data-lucide="arrow-left" class="w-4 h-4"></i> voltar à listagem
       </button>
       <div id="detalhe-content"></div>
+    </section>
+
+    <!-- ===== USUÁRIOS (admin) ===== -->
+    <section id="view-usuarios" class="p-4 lg:p-8 hidden">
+      <button onclick="showView('listagem')" class="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-4">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i> voltar
+      </button>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold text-slate-900">Usuários</h2>
+        <button onclick="abrirNovoUsuario()" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+          <i data-lucide="user-plus" class="w-4 h-4"></i> Novo usuário
+        </button>
+      </div>
+      <div id="usuarios-content"></div>
     </section>
 
     <!-- ===== UPLOAD ===== -->
@@ -308,9 +350,19 @@
   <i data-lucide="check" class="w-4 h-4"></i> <span id="toast-msg"></span>
 </div>
 
+<!-- ============== MODAL GENÉRICO ============== -->
+<div id="modal" class="hidden fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+      <h3 id="modal-title" class="font-semibold text-slate-900">—</h3>
+      <button onclick="fecharModal()" class="text-slate-400 hover:text-slate-700"><i data-lucide="x" class="w-5 h-5"></i></button>
+    </div>
+    <div id="modal-body" class="p-5"></div>
+  </div>
+</div>
+
 <script>
 const API = window.location.origin;
-const DEMO_PIN = '1234';
 let TOKEN = '';
 let USER  = null;
 let UPLOAD_PREVIEW = null;
@@ -379,21 +431,64 @@ function toast(msg) {
   setTimeout(() => $('toast').classList.add('hidden'), 3500);
 }
 
-async function autoLogin() {
-  const r = await fetch(API + '/api/auth/login', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({pin: DEMO_PIN})
-  });
-  if (!r.ok) throw new Error('Falha no auto-login');
-  const data = await r.json();
-  TOKEN = data.token;
-  USER = data.user;
+async function fazerLogin() {
+  const pin = $('login-pin').value.trim();
+  $('login-erro').classList.add('hidden');
+  if (!pin) return;
+  try {
+    const r = await fetch(API + '/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({pin})
+    });
+    if (!r.ok) throw new Error(r.status === 401 ? 'PIN inválido' : 'Erro ao entrar');
+    const data = await r.json();
+    TOKEN = data.token;
+    USER = data.user;
+    sessionStorage.setItem('cv_token', TOKEN);
+    sessionStorage.setItem('cv_user', JSON.stringify(USER));
+    $('login').classList.add('hidden');
+    iniciar();
+  } catch (e) {
+    $('login-erro').textContent = e.message;
+    $('login-erro').classList.remove('hidden');
+  }
+}
+
+function logout() {
+  sessionStorage.removeItem('cv_token');
+  sessionStorage.removeItem('cv_user');
+  TOKEN = ''; USER = null;
+  location.reload();
 }
 
 async function startApp() {
-  await autoLogin();
+  // tenta restaurar sessão
+  const t = sessionStorage.getItem('cv_token');
+  const u = sessionStorage.getItem('cv_user');
+  if (t && u) {
+    TOKEN = t; USER = JSON.parse(u);
+    // valida o token ainda serve
+    try {
+      await fetch(API + '/api/patrimonio/filiais', {headers:{'Authorization':'Bearer '+TOKEN}})
+        .then(r => { if (!r.ok) throw new Error('401'); });
+      $('login').classList.add('hidden');
+      iniciar();
+      return;
+    } catch { sessionStorage.clear(); TOKEN=''; USER=null; }
+  }
+  // sem sessão → mostra login
+  $('login').classList.remove('hidden');
+  $('login-pin').focus();
+  lucide.createIcons();
+}
+
+async function iniciar() {
   $('app').classList.remove('hidden');
   $('app').classList.add('flex');
+  // mostra "Usuários" no menu só pra admin
+  if (USER && (USER.roles || []).includes('patrimonio:admin')) {
+    $('nav-usuarios').classList.remove('hidden');
+  }
 
   // health -> mostra modo IA
   try {
@@ -425,7 +520,6 @@ async function startApp() {
     fFilialForm.addEventListener('change', refreshCentroCusto);
   } catch (e) {
     console.error(e);
-    if (e.message.includes('401')) logout();
   }
   reload();
   lucide.createIcons();
@@ -444,6 +538,7 @@ function showView(v) {
   $('view-listagem').classList.toggle('hidden', v !== 'listagem');
   $('view-upload').classList.toggle('hidden', v !== 'upload');
   $('view-detalhe').classList.toggle('hidden', v !== 'detalhe');
+  $('view-usuarios').classList.toggle('hidden', v !== 'usuarios');
   if (v === 'listagem') reload();
   if (v === 'upload') resetUpload();
   lucide.createIcons();
@@ -570,6 +665,60 @@ function renderRows(rows) {
   lucide.createIcons();
 }
 
+const DOC_LABELS = {crlv: 'CRLV', ipva: 'IPVA', seguro: 'Seguro'};
+
+function statusDocBadge(status) {
+  const map = {
+    vencido: 'bg-red-100 text-red-700', vencendo: 'bg-amber-100 text-amber-700',
+    vigente: 'bg-emerald-100 text-emerald-700', sem_validade: 'bg-slate-100 text-slate-600',
+    nao_cadastrado: 'bg-slate-100 text-slate-400',
+  };
+  const label = {vencido:'vencido', vencendo:'vence em breve', vigente:'vigente',
+                 sem_validade:'sem validade', nao_cadastrado:'não cadastrado',
+                 desconhecido:'—'}[status] || status;
+  return `<span class="text-xs px-2 py-0.5 rounded-full font-medium ${map[status]||'bg-slate-100 text-slate-500'}">${label}</span>`;
+}
+
+function renderDocRow(bemId, doc) {
+  const tipo = doc.type;
+  const label = DOC_LABELS[tipo] || tipo;
+  if (doc.status === 'nao_cadastrado') {
+    return `
+      <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+        <div class="font-medium text-slate-400">${label}</div>
+        <button onclick="abrirModalDoc('${bemId}','${tipo}',false)" class="text-xs text-violet-600 hover:bg-violet-50 px-2 py-1 rounded font-medium flex items-center gap-1">
+          <i data-lucide="plus" class="w-3.5 h-3.5"></i> Adicionar
+        </button>
+      </div>`;
+  }
+  const arquivoBtns = doc.arquivo_disponivel ? `
+    <button onclick="verDocumento('${doc.upload_id}', true)" class="text-xs bg-white border border-slate-200 hover:bg-slate-50 px-2 py-1 rounded font-medium flex items-center gap-1">
+      <i data-lucide="eye" class="w-3 h-3"></i> Ver
+    </button>
+    <button onclick="verDocumento('${doc.upload_id}', false)" class="text-xs bg-white border border-slate-200 hover:bg-slate-50 px-2 py-1 rounded font-medium flex items-center gap-1">
+      <i data-lucide="download" class="w-3 h-3"></i> Baixar
+    </button>` : (doc.upload_id ? '<span class="text-[10px] text-red-500">arquivo indisponível</span>' : '');
+  return `
+    <div class="p-3 bg-slate-50 rounded-lg">
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex-1 min-w-0">
+          <div class="font-medium">${label}</div>
+          <div class="text-xs text-slate-500 mt-0.5">vence: ${fmtDate(doc.vencimento)}${doc.dias_para_vencer != null ? ' · '+doc.dias_para_vencer+'d' : ''}</div>
+          ${doc.filename_original ? `<div class="text-[10px] text-slate-400 mt-0.5 truncate" title="${doc.filename_original}"><i data-lucide="paperclip" class="w-3 h-3 inline"></i> ${doc.filename_original}</div>` : ''}
+          ${doc.observacao ? `<div class="text-[10px] text-slate-500 mt-0.5 italic">${doc.observacao}</div>` : ''}
+          ${doc.criado_por_nome ? `<div class="text-[10px] text-slate-400">por ${doc.criado_por_nome}${doc.criado_em ? ' · '+fmtDate(doc.criado_em) : ''}</div>` : ''}
+        </div>
+        ${statusDocBadge(doc.status)}
+      </div>
+      <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-slate-200">
+        ${arquivoBtns}
+        <button onclick="abrirModalDoc('${bemId}','${tipo}',true)" class="text-xs bg-white border border-slate-200 hover:bg-slate-50 px-2 py-1 rounded font-medium flex items-center gap-1">
+          <i data-lucide="refresh-cw" class="w-3 h-3"></i> Renovar
+        </button>
+      </div>
+    </div>`;
+}
+
 async function abrirDetalhe(id) {
   showView('detalhe');
   $('detalhe-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
@@ -579,30 +728,42 @@ async function abrirDetalhe(id) {
       api('/api/v1/fleet/vehicles/' + id + '/documents'),
     ]);
     const oleo = statusTrocaOleo(veic);
-    const docCrlv = docs.documents.find(d => d.type === 'crlv');
     const statusBadge = veic.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full font-medium">ativo</span>'
                                    : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
-    const baixarBtn = veic.ativo ? `<button onclick="baixarVeiculo('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>` : '';
+    const acaoBtn = veic.ativo
+      ? `<button onclick="baixarVeiculo('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>`
+      : `<button onclick="reativarVeiculo('${id}')" class="text-emerald-600 hover:bg-emerald-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Reativar</button>`;
+    // ordena docs: crlv, ipva, seguro
+    const ordem = {crlv:0, ipva:1, seguro:2};
+    const docsOrdenados = [...docs.documents].sort((a,b)=>(ordem[a.type]??9)-(ordem[b.type]??9));
+
     $('detalhe-content').innerHTML = `
       <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4" id="header-card">
         <div class="flex items-start justify-between mb-4">
           <div>
             <div class="font-mono font-bold text-2xl">${veic.placa}</div>
-            <div class="text-slate-600 mt-1">${veic.marca} ${veic.modelo} · ${veic.ano||'—'}</div>
+            <div class="text-slate-600 mt-1">${veic.marca||''} ${veic.modelo||''} · ${veic.ano||'—'}</div>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap justify-end">
             ${statusBadge}
             <button onclick="iniciarEdicaoDados('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1">
               <i data-lucide="edit-2" class="w-4 h-4"></i> Editar dados
             </button>
-            ${baixarBtn}
+            ${acaoBtn}
           </div>
         </div>
-        <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm border-t pt-4">
+        <dl class="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm border-t pt-4">
           <div><dt class="text-xs text-slate-500">Filial</dt><dd class="font-medium">${veic.filial_id}</dd></div>
           <div><dt class="text-xs text-slate-500">Motorista</dt><dd class="font-medium">user ${veic.user_id}</dd></div>
           <div><dt class="text-xs text-slate-500">RENAVAM</dt><dd class="font-mono text-sm">${veic.renavam||'—'}</dd></div>
           <div><dt class="text-xs text-slate-500">Chassi</dt><dd class="font-mono text-sm">${veic.chassi||'—'}</dd></div>
+          <div>
+            <dt class="text-xs text-slate-500">KM atual</dt>
+            <dd class="font-mono font-medium flex items-center gap-1">
+              ${fmtKm(veic.km_atual)}
+              <button onclick="abrirModalKm('${veic.id}', ${veic.km_atual||0})" title="Atualizar KM" class="text-violet-600 hover:bg-violet-50 rounded p-0.5"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+            </dd>
+          </div>
         </dl>
       </div>
 
@@ -626,41 +787,7 @@ async function abrirDetalhe(id) {
         <div class="bg-white rounded-xl border border-slate-200 p-6">
           <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="file-text" class="w-4 h-4"></i> Documentos</h3>
           <div class="space-y-2 text-sm">
-            <div class="p-3 bg-slate-50 rounded-lg">
-              <div class="flex items-center justify-between">
-                <div class="flex-1">
-                  <div class="font-medium flex items-center gap-2">
-                    CRLV
-                    ${docCrlv?.fonte ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-normal">${docCrlv.fonte}</span>` : ''}
-                  </div>
-                  <div class="text-xs text-slate-500 mt-0.5">vence: ${fmtDate(docCrlv?.vencimento)} ${docCrlv?.dias_para_vencer != null ? '· '+docCrlv.dias_para_vencer+'d' : ''}</div>
-                  ${docCrlv?.filename_original ? `<div class="text-[10px] text-slate-400 mt-0.5 truncate" title="${docCrlv.filename_original}"><i data-lucide="paperclip" class="w-3 h-3 inline"></i> ${docCrlv.filename_original}</div>` : ''}
-                  ${docCrlv?.extraido_em ? `<div class="text-[10px] text-slate-400">extraído em ${fmtDateTime(docCrlv.extraido_em)}</div>` : ''}
-                </div>
-                <span class="text-xs px-2 py-0.5 rounded-full font-medium ${
-                  docCrlv?.status==='vencido'?'bg-red-100 text-red-700':
-                  docCrlv?.status==='vencendo'?'bg-amber-100 text-amber-700':
-                  'bg-emerald-100 text-emerald-700'}">${docCrlv?.status||'—'}</span>
-              </div>
-              ${docCrlv?.arquivo_disponivel ? `
-                <div class="flex gap-2 mt-3 pt-3 border-t border-slate-200">
-                  <button onclick="verDocumento('${docCrlv.upload_id}', true)" class="flex-1 text-xs bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg font-medium flex items-center justify-center gap-1">
-                    <i data-lucide="eye" class="w-3.5 h-3.5"></i> Visualizar
-                  </button>
-                  <button onclick="verDocumento('${docCrlv.upload_id}', false)" class="flex-1 text-xs bg-white border border-slate-200 hover:bg-slate-50 px-3 py-1.5 rounded-lg font-medium flex items-center justify-center gap-1">
-                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Baixar
-                  </button>
-                </div>
-              ` : docCrlv?.upload_id ? `
-                <div class="text-[10px] text-red-500 mt-2"><i data-lucide="alert-triangle" class="w-3 h-3 inline"></i> Arquivo original não está mais no disco.</div>
-              ` : ''}
-            </div>
-            <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg text-slate-400">
-              <div class="font-medium">IPVA</div><span class="text-xs">não cadastrado</span>
-            </div>
-            <div class="flex items-center justify-between p-3 bg-slate-50 rounded-lg text-slate-400">
-              <div class="font-medium">Seguro</div><span class="text-xs">não cadastrado</span>
-            </div>
+            ${docsOrdenados.map(d => renderDocRow(veic.id, d)).join('')}
           </div>
         </div>
       </div>
@@ -669,6 +796,18 @@ async function abrirDetalhe(id) {
   } catch (e) {
     $('detalhe-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
   }
+}
+
+async function reativarVeiculo(id) {
+  if (!confirm('Reativar este veículo? Ele volta para as listagens ativas.')) return;
+  try {
+    await fetch(API + '/api/patrimonio/veiculos/' + id + '/reativar', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN},
+    }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+    toast('Veículo reativado.');
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) { alert('Erro: ' + e.message); }
 }
 
 async function iniciarEdicaoDados(id) {
@@ -821,6 +960,219 @@ async function salvarEdicaoDados(id) {
     $('dados-err').classList.remove('hidden');
     btn.disabled = false; btn.classList.remove('opacity-50');
   }
+}
+
+// ============== Modal genérico ==============
+function abrirModal(title, html) {
+  $('modal-title').textContent = title;
+  $('modal-body').innerHTML = html;
+  $('modal').classList.remove('hidden');
+  lucide.createIcons();
+}
+function fecharModal() { $('modal').classList.add('hidden'); }
+
+// ============== Adicionar / Renovar documento ==============
+function abrirModalDoc(bemId, tipo, isRenovar) {
+  const label = DOC_LABELS[tipo] || tipo;
+  const titulo = (isRenovar ? 'Renovar ' : 'Adicionar ') + label;
+  abrirModal(titulo, `
+    <div class="space-y-3">
+      ${isRenovar ? `<div class="text-xs bg-amber-50 border border-amber-200 rounded-lg p-2 text-amber-800">O documento atual vira histórico. O novo passa a ser o vigente.</div>` : ''}
+      <div>
+        <label class="text-xs text-slate-500">Arquivo (PDF, JPG ou PNG · máx 10MB)</label>
+        <input id="md-file" type="file" accept=".pdf,.jpg,.jpeg,.png" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Vencimento</label>
+        <input id="md-venc" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Observação (opcional)</label>
+        <input id="md-obs" type="text" placeholder="ex: pago em janeiro" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div id="md-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="md-salvar" onclick="salvarDocumento('${bemId}','${tipo}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+      </div>
+    </div>
+  `);
+}
+
+async function salvarDocumento(bemId, tipo) {
+  const file = $('md-file').files[0];
+  const venc = $('md-venc').value;
+  const obs = $('md-obs').value.trim();
+  if (!file) { $('md-erro').textContent = 'Selecione um arquivo.'; $('md-erro').classList.remove('hidden'); return; }
+  const btn = $('md-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  $('md-erro').classList.add('hidden');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('tipo', tipo);
+    if (venc) fd.append('vencimento', venc);
+    if (obs) fd.append('observacao', obs);
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + bemId + '/documentos', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN}, body: fd,
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    toast(DOC_LABELS[tipo] + ' salvo.');
+    fecharModal();
+    await invalidateApiCache();
+    await abrirDetalhe(bemId);
+  } catch (e) {
+    $('md-erro').textContent = 'Erro: ' + e.message;
+    $('md-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+// ============== Atualizar KM rápido ==============
+function abrirModalKm(id, kmAtual) {
+  abrirModal('Atualizar KM', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-500">KM atual do hodômetro</label>
+        <input id="mk-km" type="number" value="${kmAtual}" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-lg font-mono mt-1" />
+      </div>
+      <div id="mk-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mk-salvar" onclick="salvarKm('${id}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+      </div>
+    </div>
+  `);
+  setTimeout(() => $('mk-km').select(), 100);
+}
+
+async function salvarKm(id) {
+  const km = parseInt($('mk-km').value);
+  if (isNaN(km) || km < 0) { $('mk-erro').textContent = 'KM inválido.'; $('mk-erro').classList.remove('hidden'); return; }
+  const btn = $('mk-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + id, {
+      method: 'PATCH', headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify({km_atual: km}),
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    toast('KM atualizado.');
+    fecharModal();
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) {
+    $('mk-erro').textContent = 'Erro: ' + e.message;
+    $('mk-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+// ============== Gestão de usuários (admin) ==============
+async function abrirUsuarios() {
+  showView('usuarios');
+  $('usuarios-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
+  try {
+    const data = await api('/api/patrimonio/usuarios');
+    const rows = data.usuarios.map(u => `
+      <tr class="hover:bg-slate-50 ${u.ativo ? '' : 'opacity-50'}">
+        <td class="px-4 py-3 font-medium">${u.nome}</td>
+        <td class="px-4 py-3 font-mono">${u.pin}</td>
+        <td class="px-4 py-3 text-slate-600">${u.filial ?? '—'}</td>
+        <td class="px-4 py-3 text-xs text-slate-500">${(u.roles||'').replace(/patrimonio:/g,'')}</td>
+        <td class="px-4 py-3">${u.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full">ativo</span>' : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full">inativo</span>'}</td>
+        <td class="px-4 py-3 text-right">
+          ${u.ativo && u.id !== USER.id ? `<button onclick="removerUsuario(${u.id},'${u.nome.replace(/'/g,"")}')" class="text-red-600 hover:underline text-xs">desativar</button>` : ''}
+        </td>
+      </tr>`).join('');
+    $('usuarios-content').innerHTML = `
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-xs uppercase text-slate-500">
+            <tr><th class="text-left px-4 py-3">Nome</th><th class="text-left px-4 py-3">PIN</th>
+            <th class="text-left px-4 py-3">Filial</th><th class="text-left px-4 py-3">Permissões</th>
+            <th class="text-left px-4 py-3">Situação</th><th class="px-4 py-3"></th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">${rows}</tbody>
+        </table>
+      </div>
+      <div class="text-xs text-slate-400 mt-3">Cada funcionário entra com o PIN dele. O PIN é a senha — não compartilhe entre pessoas.</div>
+    `;
+  } catch (e) {
+    $('usuarios-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
+  }
+  lucide.createIcons();
+}
+
+function abrirNovoUsuario() {
+  const filialOpts = FILIAIS.map(f => `<option value="${f.filial}">${f.sigla} — ${f.filial}</option>`).join('');
+  abrirModal('Novo usuário', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-500">Nome do funcionário</label>
+        <input id="mu-nome" type="text" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">PIN (4 a 8 dígitos — será a senha dele)</label>
+        <input id="mu-pin" type="text" inputmode="numeric" maxlength="8" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Filial</label>
+        <select id="mu-filial" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">${filialOpts}</select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Permissões</label>
+        <div class="mt-1 space-y-1 text-sm">
+          <label class="flex items-center gap-2"><input type="checkbox" class="mu-role" value="patrimonio:listar" checked /> Ver veículos</label>
+          <label class="flex items-center gap-2"><input type="checkbox" class="mu-role" value="patrimonio:cadastrar" checked /> Cadastrar e editar</label>
+          <label class="flex items-center gap-2"><input type="checkbox" class="mu-role" value="patrimonio:reatribuir" /> Reatribuir responsável</label>
+          <label class="flex items-center gap-2"><input type="checkbox" class="mu-role" value="patrimonio:admin" /> Administrador (gerencia usuários, baixa veículos)</label>
+        </div>
+      </div>
+      <div id="mu-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-2">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mu-salvar" onclick="salvarUsuario()" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Criar</button>
+      </div>
+    </div>
+  `);
+}
+
+async function salvarUsuario() {
+  const nome = $('mu-nome').value.trim();
+  const pin = $('mu-pin').value.trim();
+  const filial = parseInt($('mu-filial').value);
+  const roles = [...document.querySelectorAll('.mu-role:checked')].map(c => c.value);
+  if (!nome) return mostrarErroU('Informe o nome.');
+  if (!/^\d{4,8}$/.test(pin)) return mostrarErroU('PIN deve ter 4 a 8 dígitos.');
+  if (!roles.length) return mostrarErroU('Marque ao menos uma permissão.');
+  const btn = $('mu-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const r = await fetch(API + '/api/patrimonio/usuarios', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify({nome, pin, filial, roles}),
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    toast('Usuário criado.');
+    fecharModal();
+    abrirUsuarios();
+  } catch (e) {
+    mostrarErroU('Erro: ' + e.message);
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+function mostrarErroU(msg) {
+  $('mu-erro').textContent = msg;
+  $('mu-erro').classList.remove('hidden');
+}
+
+async function removerUsuario(id, nome) {
+  if (!confirm(`Desativar o usuário "${nome}"? Ele não vai mais conseguir entrar.`)) return;
+  try {
+    await fetch(API + '/api/patrimonio/usuarios/' + id, {
+      method: 'DELETE', headers: {'Authorization': 'Bearer ' + TOKEN},
+    }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+    toast('Usuário desativado.');
+    abrirUsuarios();
+  } catch (e) { alert('Erro: ' + e.message); }
 }
 
 async function verDocumento(uploadId, inline) {

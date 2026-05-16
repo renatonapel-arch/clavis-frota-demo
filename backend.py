@@ -161,6 +161,31 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_veiculos_placa ON veiculos(placa);
         CREATE INDEX IF NOT EXISTS idx_veiculos_vencimento ON veiculos(vencimento_crlv);
         CREATE INDEX IF NOT EXISTS idx_bens_filial_status ON bens(filial, status);
+
+        CREATE TABLE IF NOT EXISTS usuarios (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          nome        TEXT NOT NULL,
+          pin         TEXT NOT NULL UNIQUE,
+          filial      INTEGER,
+          roles       TEXT NOT NULL,
+          ativo       INTEGER NOT NULL DEFAULT 1,
+          created_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS documentos (
+          id                TEXT PRIMARY KEY,
+          bem_id            TEXT NOT NULL REFERENCES bens(cod_interno) ON DELETE CASCADE,
+          tipo              TEXT NOT NULL CHECK (tipo IN ('crlv','ipva','seguro')),
+          upload_id         TEXT,
+          filename_original TEXT,
+          vencimento        TEXT,
+          observacao        TEXT,
+          criado_por        INTEGER,
+          criado_por_nome   TEXT,
+          criado_em         TEXT NOT NULL,
+          ativo             INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_doc_bem ON documentos(bem_id, tipo, ativo);
     """)
 
     # migration idempotente — adiciona colunas novas em DBs já existentes
@@ -188,6 +213,35 @@ def init_db() -> None:
         seed_veic = (BASE_DIR / "seed_veiculos.sql")
         if seed_veic.exists():
             cur.executescript(seed_veic.read_text(encoding="utf-8"))
+
+    # seed usuário admin (Renato) — idempotente. PIN = DEMO_PIN.
+    usuarios_count = cur.execute("SELECT COUNT(*) FROM usuarios").fetchone()[0]
+    if usuarios_count == 0:
+        cur.execute("""
+            INSERT INTO usuarios (id, nome, pin, filial, roles, ativo, created_at)
+            VALUES (1, 'Renato Napel', ?, 100,
+                    'patrimonio:cadastrar,patrimonio:listar,patrimonio:reatribuir,patrimonio:admin',
+                    1, ?)
+        """, (DEMO_PIN, now_iso()))
+
+    # migration: CRLV dos veículos existentes -> tabela documentos (uma vez)
+    doc_count = cur.execute("SELECT COUNT(*) FROM documentos").fetchone()[0]
+    if doc_count == 0 and veiculos_count > 0:
+        for v in cur.execute("""
+            SELECT bem_id, vencimento_crlv, dados_origem FROM veiculos
+        """).fetchall():
+            origem = {}
+            try:
+                origem = json.loads(v["dados_origem"]) if v["dados_origem"] else {}
+            except Exception:
+                pass
+            cur.execute("""
+                INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
+                                        vencimento, criado_por, criado_por_nome, criado_em, ativo)
+                VALUES (?,?,'crlv',?,?,?,?,?,?,1)
+            """, (uuid.uuid4().hex, v["bem_id"], origem.get("upload_id"),
+                  origem.get("filename_original"), v["vencimento_crlv"],
+                  origem.get("user_id"), None, origem.get("timestamp") or now_iso()))
 
     conn.commit()
     conn.close()
@@ -354,19 +408,35 @@ def derive_status(vencimento_crlv: str) -> str:
         return "ativo"
 
 
+def get_user_by_pin(pin: str) -> Optional[dict]:
+    """Resolve um usuário ativo pelo PIN. Retorna None se inválido."""
+    if not pin:
+        return None
+    conn = db()
+    row = conn.execute(
+        "SELECT id, nome, filial, roles FROM usuarios WHERE pin = ? AND ativo = 1",
+        (pin,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "user_id": row["id"],
+        "nome": row["nome"],
+        "filial": row["filial"],
+        "roles": set(r.strip() for r in (row["roles"] or "").split(",") if r.strip()),
+    }
+
+
 def auth_check(authorization: Optional[str]) -> dict:
-    """PIN auth simples — em staging trocar por JWT real."""
+    """Auth por PIN individual — cada funcionário tem o seu.
+    O token Bearer é o próprio PIN. Em staging trocar por JWT real."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Não autenticado")
-    token = authorization.removeprefix("Bearer ")
-    if token != DEMO_PIN:
+    token = authorization.removeprefix("Bearer ").strip()
+    user = get_user_by_pin(token)
+    if not user:
         raise HTTPException(401, "PIN inválido")
-    return {
-        "user_id": DEMO_USER_ID,
-        "nome": DEMO_USER_NOME,
-        "filial": DEMO_USER_FILIAL,
-        "roles": DEMO_USER_ROLES,
-    }
+    return user
 
 
 def require_role(user: dict, role: str) -> None:
@@ -393,6 +463,45 @@ def validar_dados(d: dict) -> list[str]:
     if not d.get("vencimento_crlv"):
         erros.append("vencimento_crlv obrigatório")
     return erros
+
+
+def validar_e_salvar_arquivo(content: bytes, content_type: str, filename: str) -> str:
+    """Valida (MIME, tamanho, magic bytes) e salva o arquivo no UPLOAD_DIR.
+    Retorna o upload_id. Levanta HTTPException em qualquer falha."""
+    if content_type not in ALLOWED_MIME:
+        raise HTTPException(415, f"Tipo não suportado: {content_type}. Use PDF, JPG ou PNG.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Arquivo maior que 10MB")
+    if len(content) < 100:
+        raise HTTPException(400, "Arquivo vazio ou corrompido")
+    if _magic_available:
+        detected = magic.from_buffer(content[:2048], mime=True)
+        norm_declared = "image/jpeg" if content_type == "image/jpg" else content_type
+        norm_detected = "image/jpeg" if detected == "image/jpg" else detected
+        if norm_detected != norm_declared and not (
+            norm_declared == "application/pdf" and norm_detected.startswith("application/")
+        ):
+            raise HTTPException(415, f"Conteúdo do arquivo ({detected}) não bate com o tipo declarado ({content_type})")
+    upload_id = uuid.uuid4().hex
+    suffix = Path(filename or "doc.bin").suffix or ".bin"
+    (UPLOAD_DIR / f"{upload_id}{suffix}").write_bytes(content)
+    return upload_id
+
+
+def status_documento(vencimento: Optional[str]) -> tuple[str, Optional[int]]:
+    """Retorna (status, dias_para_vencer) de um documento pela data de vencimento."""
+    if not vencimento:
+        return "sem_validade", None
+    try:
+        v = date.fromisoformat(vencimento)
+        delta = (v - date.today()).days
+        if delta < 0:
+            return "vencido", delta
+        if delta <= 30:
+            return "vencendo", delta
+        return "vigente", delta
+    except Exception:
+        return "desconhecido", None
 
 
 # ---------- lifespan ----------
@@ -422,13 +531,78 @@ def health():
 
 @app.post("/api/auth/login")
 def login(body: dict):
-    if body.get("pin") != DEMO_PIN:
+    pin = (body.get("pin") or "").strip()
+    user = get_user_by_pin(pin)
+    if not user:
         raise HTTPException(401, "PIN inválido")
     return {
-        "token": DEMO_PIN,
-        "user": {"id": DEMO_USER_ID, "nome": DEMO_USER_NOME, "filial": DEMO_USER_FILIAL,
-                 "roles": list(DEMO_USER_ROLES)},
+        "token": pin,
+        "user": {"id": user["user_id"], "nome": user["nome"],
+                 "filial": user["filial"], "roles": sorted(user["roles"])},
     }
+
+
+# ---------- gestão de usuários (admin) ----------
+@app.get("/api/patrimonio/usuarios")
+def listar_usuarios(authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:admin")
+    conn = db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT id, nome, pin, filial, roles, ativo FROM usuarios ORDER BY id").fetchall()]
+    conn.close()
+    return {"usuarios": rows}
+
+
+class UsuarioIn(BaseModel):
+    nome: str
+    pin: str
+    filial: Optional[int] = None
+    roles: list[str] = Field(default_factory=lambda: ["patrimonio:cadastrar", "patrimonio:listar"])
+
+
+@app.post("/api/patrimonio/usuarios")
+def criar_usuario(body: UsuarioIn, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:admin")
+    pin = body.pin.strip()
+    if not pin.isdigit() or not (4 <= len(pin) <= 8):
+        raise HTTPException(422, "PIN deve ter de 4 a 8 dígitos numéricos")
+    valid_roles = {"patrimonio:cadastrar", "patrimonio:listar", "patrimonio:reatribuir", "patrimonio:admin"}
+    roles = [r for r in body.roles if r in valid_roles]
+    if not roles:
+        raise HTTPException(422, "informe ao menos uma role válida")
+    conn = db()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO usuarios (nome, pin, filial, roles, ativo, created_at)
+            VALUES (?,?,?,?,1,?)
+        """, (body.nome.strip(), pin, body.filial, ",".join(roles), now_iso()))
+        conn.commit()
+        new_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(409, f"PIN {pin} já está em uso")
+    conn.close()
+    return {"id": new_id, "nome": body.nome.strip()}
+
+
+@app.delete("/api/patrimonio/usuarios/{user_id}")
+def desativar_usuario(user_id: int, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:admin")
+    if user_id == user["user_id"]:
+        raise HTTPException(422, "Você não pode desativar o próprio usuário")
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE usuarios SET ativo = 0 WHERE id = ?", (user_id,))
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(404, "Usuário não encontrado")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.get("/api/patrimonio/filiais")
@@ -612,6 +786,13 @@ def cadastrar_veiculo(
             data.get("margem_dias_aviso"),
             ts, ts,
         ))
+        # registra o CRLV na tabela documentos
+        cur.execute("""
+            INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
+                                    vencimento, criado_por, criado_por_nome, criado_em, ativo)
+            VALUES (?,?,'crlv',?,?,?,?,?,?,1)
+        """, (uuid.uuid4().hex, bem_id, data["upload_id"], data.get("filename_original"),
+              data["vencimento_crlv"], user["user_id"], user["nome"], ts))
         conn.commit()
     except sqlite3.IntegrityError as e:
         conn.rollback()
@@ -636,6 +817,7 @@ def listar_veiculos(
     filial: Optional[int] = None,
     status: Optional[str] = None,
     busca: Optional[str] = None,
+    incluir_baixados: bool = False,
     authorization: Optional[str] = Header(None),
 ):
     user = auth_check(authorization)
@@ -643,18 +825,23 @@ def listar_veiculos(
 
     sql = """
         SELECT b.cod_interno AS bem_id, v.placa, v.modelo, v.marca,
-               b.filial, b.responsavel_nome, b.status,
+               b.filial, b.responsavel_nome, b.status, b.deleted_at,
                v.vencimento_crlv, v.km_atual
         FROM bens b
         JOIN veiculos v ON v.bem_id = b.cod_interno
-        WHERE b.deleted_at IS NULL
+        WHERE 1=1
     """
     params: list = []
+    # baixados: por padrão escondidos; aparecem se incluir_baixados OU filtro status=baixado
+    if status == "baixado":
+        sql += " AND b.deleted_at IS NOT NULL"
+    elif not incluir_baixados:
+        sql += " AND b.deleted_at IS NULL"
     if filial:
         sql += " AND b.filial = ?"
         params.append(filial)
-    if status:
-        sql += " AND b.status = ?"
+    if status and status != "baixado":
+        sql += " AND b.status = ? AND b.deleted_at IS NULL"
         params.append(status)
     if busca:
         sql += " AND (v.placa LIKE ? OR v.modelo LIKE ? OR v.renavam LIKE ?)"
@@ -682,10 +869,11 @@ def obter_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
     user = auth_check(authorization)
     require_role(user, "patrimonio:listar")
     conn = db()
+    # permite ver detalhe de baixados também (pra poder reativar)
     row = conn.execute("""
         SELECT b.*, v.*
         FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
-        WHERE b.cod_interno = ? AND b.deleted_at IS NULL
+        WHERE b.cod_interno = ?
     """, (bem_id,)).fetchone()
     conn.close()
     if not row:
@@ -851,63 +1039,163 @@ def baixar_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
     return {"ok": True}
 
 
-# ---------- documentos do veículo (item 4 — contrato com oil-change) ----------
-@app.get("/api/v1/fleet/vehicles/{vehicle_id}/documents")
-def fleet_documents(vehicle_id: str, authorization: Optional[str] = Header(None)):
-    """
-    Lista documentos do veículo (CRLV por enquanto; IPVA/seguro depois).
-    Inclui status calculado: vigente, vencendo (≤30d), vencido.
-    """
+# ---------- documentos do veículo (CRLV / IPVA / Seguro) ----------
+def _doc_to_dto(row: dict) -> dict:
+    """Converte uma linha da tabela documentos -> DTO de API."""
+    upload_id = row.get("upload_id")
+    arquivo_existe = bool(upload_id and list(UPLOAD_DIR.glob(f"{upload_id}.*")))
+    status, dias = status_documento(row.get("vencimento"))
+    return {
+        "id": row["id"],
+        "type": row["tipo"],
+        "vencimento": row.get("vencimento"),
+        "status": status,
+        "dias_para_vencer": dias,
+        "observacao": row.get("observacao"),
+        "upload_id": upload_id,
+        "filename_original": row.get("filename_original"),
+        "arquivo_disponivel": arquivo_existe,
+        "download_url": f"/api/patrimonio/uploads/{upload_id}" if (upload_id and arquivo_existe) else None,
+        "criado_por_nome": row.get("criado_por_nome"),
+        "criado_em": row.get("criado_em"),
+        "ativo": bool(row.get("ativo", 1)),
+    }
+
+
+def _documentos_do_veiculo(bem_id: str, incluir_historico: bool = False) -> list[dict]:
+    conn = db()
+    sql = "SELECT * FROM documentos WHERE bem_id = ?"
+    if not incluir_historico:
+        sql += " AND ativo = 1"
+    sql += " ORDER BY tipo, criado_em DESC"
+    rows = [dict(r) for r in conn.execute(sql, (bem_id,)).fetchall()]
+    conn.close()
+    return [_doc_to_dto(r) for r in rows]
+
+
+@app.get("/api/patrimonio/veiculos/{bem_id}/documentos")
+def listar_documentos(
+    bem_id: str,
+    incluir_historico: bool = False,
+    authorization: Optional[str] = Header(None),
+):
     user = auth_check(authorization)
     require_role(user, "patrimonio:listar")
     conn = db()
-    row = conn.execute("""
-        SELECT b.cod_interno AS bem_id, v.placa, v.vencimento_crlv,
-               v.dados_origem
-        FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
-        WHERE b.cod_interno = ? AND b.deleted_at IS NULL
-    """, (vehicle_id,)).fetchone()
+    veic = conn.execute(
+        "SELECT cod_interno FROM bens WHERE cod_interno = ? AND deleted_at IS NULL",
+        (bem_id,)).fetchone()
+    conn.close()
+    if not veic:
+        raise HTTPException(404, "Veículo não encontrado")
+    docs = _documentos_do_veiculo(bem_id, incluir_historico)
+    # garante os 3 tipos no retorno (placeholder se não cadastrado)
+    presentes = {d["type"] for d in docs if d["ativo"]}
+    for tipo in ("crlv", "ipva", "seguro"):
+        if tipo not in presentes:
+            docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
+    return {"vehicle_id": bem_id, "documentos": docs}
+
+
+@app.post("/api/patrimonio/veiculos/{bem_id}/documentos")
+async def adicionar_documento(
+    bem_id: str,
+    tipo: str = Form(...),
+    vencimento: Optional[str] = Form(None),
+    observacao: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Adiciona/renova um documento (crlv, ipva ou seguro).
+    Renovação: o documento anterior do mesmo tipo vira histórico (ativo=0).
+    Se for CRLV com vencimento, atualiza também veiculos.vencimento_crlv.
+    """
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    if tipo not in ("crlv", "ipva", "seguro"):
+        raise HTTPException(422, "tipo deve ser crlv, ipva ou seguro")
+    if vencimento:
+        try:
+            date.fromisoformat(vencimento)
+        except ValueError:
+            raise HTTPException(422, "vencimento deve ser YYYY-MM-DD")
+
+    conn = db()
+    veic = conn.execute(
+        "SELECT cod_interno FROM bens WHERE cod_interno = ? AND deleted_at IS NULL",
+        (bem_id,)).fetchone()
+    conn.close()
+    if not veic:
+        raise HTTPException(404, "Veículo não encontrado")
+
+    content = await file.read()
+    upload_id = validar_e_salvar_arquivo(content, file.content_type, file.filename or "")
+
+    ts = now_iso()
+    doc_id = uuid.uuid4().hex
+    conn = db()
+    cur = conn.cursor()
+    # renovação — documento anterior do mesmo tipo vira histórico
+    cur.execute("UPDATE documentos SET ativo = 0 WHERE bem_id = ? AND tipo = ? AND ativo = 1",
+                (bem_id, tipo))
+    cur.execute("""
+        INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
+                                vencimento, observacao, criado_por, criado_por_nome, criado_em, ativo)
+        VALUES (?,?,?,?,?,?,?,?,?,?,1)
+    """, (doc_id, bem_id, tipo, upload_id, file.filename, vencimento, observacao,
+          user["user_id"], user["nome"], ts))
+    # CRLV com vencimento -> sincroniza veiculos.vencimento_crlv + status
+    if tipo == "crlv" and vencimento:
+        novo_status = derive_status(vencimento)
+        cur.execute("UPDATE veiculos SET vencimento_crlv = ?, updated_at = ? WHERE bem_id = ?",
+                    (vencimento, ts, bem_id))
+        cur.execute("UPDATE bens SET status = ?, updated_at = ? WHERE cod_interno = ? AND status != 'baixado'",
+                    (novo_status, ts, bem_id))
+    conn.commit()
+    conn.close()
+    return {"id": doc_id, "tipo": tipo, "upload_id": upload_id, "vencimento": vencimento}
+
+
+@app.get("/api/v1/fleet/vehicles/{vehicle_id}/documents")
+def fleet_documents(vehicle_id: str, authorization: Optional[str] = Header(None)):
+    """Alias /fleet (contrato oil-change) — lê da tabela documentos."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    conn = db()
+    row = conn.execute(
+        "SELECT v.placa FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno "
+        "WHERE b.cod_interno = ?", (vehicle_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404, "Veículo não encontrado")
+    docs = _documentos_do_veiculo(vehicle_id, incluir_historico=False)
+    presentes = {d["type"] for d in docs}
+    for tipo in ("crlv", "ipva", "seguro"):
+        if tipo not in presentes:
+            docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
+    return {"vehicle_id": vehicle_id, "placa": row["placa"], "documents": docs}
 
-    venc_crlv = row["vencimento_crlv"]
-    try:
-        v_date = date.fromisoformat(venc_crlv)
-        delta = (v_date - date.today()).days
-        if delta < 0:
-            crlv_status = "vencido"
-        elif delta <= 30:
-            crlv_status = "vencendo"
-        else:
-            crlv_status = "vigente"
-    except Exception:
-        crlv_status = "desconhecido"
-        delta = None
 
-    origem = json.loads(row["dados_origem"]) if row["dados_origem"] else {}
-    upload_id = origem.get("upload_id")
-
-    # checa se o arquivo ainda existe no disco
-    arquivo_existe = bool(upload_id and list(UPLOAD_DIR.glob(f"{upload_id}.*")))
-
-    documents = [{
-        "type": "crlv",
-        "vencimento": venc_crlv,
-        "status": crlv_status,
-        "dias_para_vencer": delta,
-        "fonte": origem.get("fonte"),
-        "upload_id": upload_id,
-        "filename_original": origem.get("filename_original"),
-        "arquivo_disponivel": arquivo_existe,
-        "download_url": f"/api/patrimonio/uploads/{upload_id}" if (upload_id and arquivo_existe) else None,
-        "extraido_em": origem.get("timestamp"),
-    }]
-    # placeholders pra IPVA / seguro (não implementados ainda)
-    documents.append({"type": "ipva", "status": "nao_cadastrado"})
-    documents.append({"type": "seguro", "status": "nao_cadastrado"})
-
-    return {"vehicle_id": vehicle_id, "placa": row["placa"], "documents": documents}
+@app.post("/api/patrimonio/veiculos/{bem_id}/reativar")
+def reativar_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
+    """Reativa um veículo baixado (desfaz o soft-delete)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    conn = db()
+    row = conn.execute(
+        "SELECT v.vencimento_crlv FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno "
+        "WHERE b.cod_interno = ?", (bem_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Veículo não encontrado")
+    novo_status = derive_status(row["vencimento_crlv"])
+    cur = conn.cursor()
+    cur.execute("UPDATE bens SET deleted_at = NULL, status = ?, updated_at = ? WHERE cod_interno = ?",
+                (novo_status, now_iso(), bem_id))
+    conn.commit()
+    conn.close()
+    return {"id": bem_id, "status": novo_status, "reativado": True}
 
 
 @app.get("/api/patrimonio/uploads/{upload_id}")
@@ -927,13 +1215,20 @@ def download_upload(
     auth_header = authorization or (f"Bearer {token}" if token else None)
     user = auth_check(auth_header)
 
-    # busca o veículo dono do upload pra checar filial e pegar metadata
+    # busca o veículo dono do upload — procura na tabela documentos E em dados_origem
     conn = db()
     row = conn.execute("""
-        SELECT b.filial, v.dados_origem FROM bens b
-        JOIN veiculos v ON v.bem_id = b.cod_interno
-        WHERE json_extract(v.dados_origem, '$.upload_id') = ? AND b.deleted_at IS NULL
+        SELECT b.filial, d.filename_original FROM documentos d
+        JOIN bens b ON b.cod_interno = d.bem_id
+        WHERE d.upload_id = ?
     """, (upload_id,)).fetchone()
+    if not row:
+        # fallback: uploads antigos referenciados só em dados_origem
+        row = conn.execute("""
+            SELECT b.filial, json_extract(v.dados_origem, '$.filename_original') AS filename_original
+            FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
+            WHERE json_extract(v.dados_origem, '$.upload_id') = ?
+        """, (upload_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(404, "Upload não encontrado")
@@ -946,9 +1241,7 @@ def download_upload(
         raise HTTPException(404, "Arquivo não está mais no disco")
     arquivo = matches[0]
 
-    # nome original pra Content-Disposition
-    origem = json.loads(row["dados_origem"]) if row["dados_origem"] else {}
-    nome_original = origem.get("filename_original") or arquivo.name
+    nome_original = row["filename_original"] or arquivo.name
 
     # MIME por extensão
     ext_to_mime = {
@@ -985,6 +1278,7 @@ def _to_fleet_dto(row: dict) -> dict:
         "ano": row.get("ano_fabricacao"),
         "filial_id": row.get("filial"),
         "user_id": row.get("responsavel_user_id"),
+        "km_atual": row.get("km_atual"),
         "intervalo_km": row.get("intervalo_km"),
         "intervalo_meses": row.get("intervalo_meses"),
         "km_ultima_troca": row.get("km_ultima_troca"),
@@ -1008,7 +1302,7 @@ def fleet_list(
 
     sql = """
         SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.status, b.deleted_at,
-               v.placa, v.marca, v.modelo, v.ano_fabricacao,
+               v.placa, v.marca, v.modelo, v.ano_fabricacao, v.km_atual,
                v.intervalo_km, v.intervalo_meses, v.km_ultima_troca,
                v.data_ultima_troca, v.margem_km_aviso, v.margem_dias_aviso,
                v.vencimento_crlv
@@ -1047,7 +1341,7 @@ def fleet_detail(vehicle_id: str, authorization: Optional[str] = Header(None)):
                v.data_ultima_troca, v.margem_km_aviso, v.margem_dias_aviso,
                v.vencimento_crlv
         FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
-        WHERE b.cod_interno = ? AND b.deleted_at IS NULL
+        WHERE b.cod_interno = ?
     """, (vehicle_id,)).fetchone()
     conn.close()
     if not row:
