@@ -1316,7 +1316,7 @@ async function handleFile(file) {
 function fillForm(p) {
   $('form-loading').classList.add('hidden');
   $('form-filled').classList.remove('hidden');
-  const d = p.dados_extraidos;
+  const d = p.dados_extraidos || {};
   $('f-placa').value   = d.placa || '';
   $('f-renavam').value = d.renavam || '';
   $('f-chassi').value  = d.chassi || '';
@@ -1326,11 +1326,24 @@ function fillForm(p) {
   $('f-anomodelo').value = d.ano_modelo || '';
   $('f-venc').value    = d.vencimento_crlv || '';
 
-  // marca campos com baixa confiança
   ['f-placa','f-renavam','f-chassi','f-venc'].forEach(id => {
     $(id).classList.remove('field-critical','field-ok','border-slate-200');
     $(id).classList.add('border');
   });
+
+  // FALHA NA IA — form vem vazio, aviso vermelho, sem dado de mock
+  if (p.erro_vision) {
+    $('alert-incertos').className = 'bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-800';
+    $('alert-incertos').classList.remove('hidden');
+    $('alert-incertos').innerHTML =
+      `<strong>⚠ A leitura automática falhou.</strong> ${p.erro_vision}<br>` +
+      `O arquivo foi anexado — <strong>preencha os campos abaixo manualmente</strong> e salve.`;
+    ['f-placa','f-renavam','f-chassi','f-venc'].forEach(id => $(id).classList.add('field-critical'));
+    lucide.createIcons();
+    return;
+  }
+
+  // sucesso — marca campos por confiança
   const map = {placa:'f-placa', renavam:'f-renavam', chassi:'f-chassi', vencimento_crlv:'f-venc'};
   Object.entries(map).forEach(([campo, id]) => {
     const c = (p.confidence||{})[campo] ?? 1;
@@ -1339,7 +1352,9 @@ function fillForm(p) {
   });
 
   if (p.campos_incertos && p.campos_incertos.length) {
+    $('alert-incertos').className = 'bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900';
     $('alert-incertos').classList.remove('hidden');
+    $('alert-incertos').innerHTML = `⚠ IA com baixa confiança em: <strong id="lista-incertos"></strong>. Confirme antes de salvar.`;
     $('lista-incertos').textContent = p.campos_incertos.join(', ');
   } else {
     $('alert-incertos').classList.add('hidden');
@@ -1388,7 +1403,7 @@ async function salvarVeiculo() {
     centro_custo: $('f-cc').value,
     km_atual: parseInt($('f-km').value) || 0,
     dados_raw: UPLOAD_PREVIEW.dados_extraidos,
-    fonte: UPLOAD_PREVIEW.fonte,
+    fonte: UPLOAD_PREVIEW.erro_vision ? 'manual' : UPLOAD_PREVIEW.fonte,
     filename_original: UPLOAD_PREVIEW.filename,
   };
   // manutenção (opcional — só envia o que o usuário digitou)

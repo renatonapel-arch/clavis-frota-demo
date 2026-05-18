@@ -379,13 +379,29 @@ def call_claude_vision_mock(filename: str) -> dict:
 
 
 def extract_crlv(file_bytes: bytes, mime_type: str, filename: str) -> tuple[dict, str]:
-    """Roteia para Vision real ou mock. Retorna (dados, fonte)."""
+    """Roteia para Vision real ou mock. Retorna (dados, fonte).
+
+    IMPORTANTE: com Vision real ligado, se a chamada falha NÃO cai no mock.
+    Mascarar erro com dados falsos plausíveis faz o funcionário cadastrar
+    veículo errado. Retorna dados vazios + fonte 'erro: <motivo>'.
+    """
     if USE_REAL_VISION:
         try:
             return call_claude_vision_real(file_bytes, mime_type), "claude-vision-real"
         except Exception as e:
-            print(f"[vision] real falhou ({e}), caindo no mock")
-            return call_claude_vision_mock(filename), f"mock-fallback ({type(e).__name__})"
+            msg = str(e)
+            if "credit balance is too low" in msg:
+                amigavel = "Sem créditos na conta de IA — avise o gestor (painel Anthropic)."
+            elif "rate_limit" in msg or "429" in msg:
+                amigavel = "IA recebendo muitas requisições — tente de novo em instantes."
+            elif "401" in msg or "authentication" in msg.lower():
+                amigavel = "Chave da IA inválida — avise o gestor."
+            elif "overloaded" in msg or "529" in msg:
+                amigavel = "Serviço de IA sobrecarregado — tente de novo em instantes."
+            else:
+                amigavel = "Leitura automática indisponível — preencha os campos manualmente."
+            print(f"[vision] real falhou: {msg}")
+            return {}, f"erro: {amigavel}"
     return call_claude_vision_mock(filename), "claude-vision-mock"
 
 
@@ -658,6 +674,9 @@ async def vision_extract(
     raw, fonte = extract_crlv(content, file.content_type, file.filename or "")
     latency_ms = int((time.time() - t0) * 1000)
 
+    # falha na IA — arquivo fica salvo, mas form vem vazio + aviso
+    erro_vision = fonte[5:].strip() if fonte.startswith("erro:") else None
+
     # campos críticos com confiança <0.85 -> exige confirmação manual
     conf = raw.get("confidence", {})
     criticos = {"placa", "renavam", "chassi", "vencimento_crlv"}
@@ -673,6 +692,7 @@ async def vision_extract(
         "filename": file.filename,
         "bytes": len(content),
         "fonte": fonte,
+        "erro_vision": erro_vision,
         "modelo": VISION_MODEL if USE_REAL_VISION and "real" in fonte else "fixture",
     }
 
