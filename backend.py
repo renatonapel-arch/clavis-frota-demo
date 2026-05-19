@@ -125,6 +125,8 @@ def init_db() -> None:
           responsavel_user_id  INTEGER NOT NULL,
           responsavel_nome     TEXT NOT NULL,
           data_aquisicao       TEXT,
+          tipo_bem             TEXT NOT NULL DEFAULT 'veiculo'
+                               CHECK (tipo_bem IN ('veiculo','equipamento')),
           status               TEXT NOT NULL DEFAULT 'ativo'
                                CHECK (status IN ('ativo','manutencao','vencido','baixado')),
           created_at           TEXT NOT NULL,
@@ -132,11 +134,13 @@ def init_db() -> None:
           deleted_at           TEXT
         );
 
+        -- placa/renavam/chassi/vencimento_crlv são nullable: equipamentos
+        -- (empilhadeira etc.) não têm CRLV. UNIQUE permite múltiplos NULL no SQLite.
         CREATE TABLE IF NOT EXISTS veiculos (
           bem_id               TEXT PRIMARY KEY REFERENCES bens(cod_interno) ON DELETE CASCADE,
-          placa                TEXT NOT NULL,
-          renavam              TEXT NOT NULL UNIQUE,
-          chassi               TEXT NOT NULL UNIQUE,
+          placa                TEXT,
+          renavam              TEXT UNIQUE,
+          chassi               TEXT UNIQUE,
           marca                TEXT,
           modelo               TEXT,
           ano_fabricacao       INTEGER,
@@ -145,7 +149,7 @@ def init_db() -> None:
           combustivel          TEXT,
           cilindradas          INTEGER,
           km_atual             INTEGER DEFAULT 0,
-          vencimento_crlv      TEXT NOT NULL,
+          vencimento_crlv      TEXT,
           dados_raw            TEXT NOT NULL,
           dados_origem         TEXT NOT NULL,
           intervalo_km         INTEGER,
@@ -190,7 +194,8 @@ def init_db() -> None:
 
     # migration idempotente — adiciona colunas novas em DBs já existentes
     cur.execute("PRAGMA table_info(veiculos)")
-    cols = {row["name"] for row in cur.fetchall()}
+    vinfo = {row["name"]: row for row in cur.fetchall()}
+    cols = set(vinfo.keys())
     migrations = [
         ("intervalo_km",      "ALTER TABLE veiculos ADD COLUMN intervalo_km INTEGER"),
         ("intervalo_meses",   "ALTER TABLE veiculos ADD COLUMN intervalo_meses INTEGER"),
@@ -202,6 +207,42 @@ def init_db() -> None:
     for col, sql in migrations:
         if col not in cols:
             cur.execute(sql)
+
+    # migration: tipo_bem em bens (pra equipamentos sem CRLV)
+    cur.execute("PRAGMA table_info(bens)")
+    bcols = {r["name"] for r in cur.fetchall()}
+    if "tipo_bem" not in bcols:
+        cur.execute("ALTER TABLE bens ADD COLUMN tipo_bem TEXT NOT NULL DEFAULT 'veiculo'")
+
+    # migration: relaxa NOT NULL de placa/renavam/chassi/vencimento_crlv
+    # (DBs antigos têm NOT NULL — rebuild da tabela preservando os dados)
+    if vinfo.get("placa") and vinfo["placa"]["notnull"] == 1:
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        cur.executescript("""
+            CREATE TABLE veiculos_new (
+              bem_id TEXT PRIMARY KEY REFERENCES bens(cod_interno) ON DELETE CASCADE,
+              placa TEXT, renavam TEXT UNIQUE, chassi TEXT UNIQUE,
+              marca TEXT, modelo TEXT, ano_fabricacao INTEGER, ano_modelo INTEGER,
+              cor TEXT, combustivel TEXT, cilindradas INTEGER,
+              km_atual INTEGER DEFAULT 0, vencimento_crlv TEXT,
+              dados_raw TEXT NOT NULL, dados_origem TEXT NOT NULL,
+              intervalo_km INTEGER, intervalo_meses INTEGER, km_ultima_troca INTEGER,
+              data_ultima_troca TEXT, margem_km_aviso INTEGER, margem_dias_aviso INTEGER,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO veiculos_new SELECT
+              bem_id, placa, renavam, chassi, marca, modelo, ano_fabricacao, ano_modelo,
+              cor, combustivel, cilindradas, km_atual, vencimento_crlv, dados_raw, dados_origem,
+              intervalo_km, intervalo_meses, km_ultima_troca, data_ultima_troca,
+              margem_km_aviso, margem_dias_aviso, created_at, updated_at
+            FROM veiculos;
+            DROP TABLE veiculos;
+            ALTER TABLE veiculos_new RENAME TO veiculos;
+            CREATE INDEX IF NOT EXISTS idx_veiculos_placa ON veiculos(placa);
+            CREATE INDEX IF NOT EXISTS idx_veiculos_vencimento ON veiculos(vencimento_crlv);
+        """)
+        conn.execute("PRAGMA foreign_keys=ON")
 
     # seed filiais
     seed_sql = (BASE_DIR / "seed_filiais.sql").read_text(encoding="utf-8")
@@ -467,17 +508,42 @@ def sanitize_vision(raw: dict) -> dict:
     return {k: v for k, v in raw.items() if k in allowed}
 
 
-def validar_dados(d: dict) -> list[str]:
+def validar_dados(d: dict, tipo_bem: str = "veiculo") -> list[str]:
+    """Valida dados do bem.
+    tipo='veiculo': placa/renavam/chassi/vencimento_crlv obrigatórios e no formato.
+    tipo='equipamento': todos opcionais (empilhadeira não tem CRLV); se informados,
+      placa e renavam são validados; chassi/série é texto livre.
+    """
     erros = []
-    placa = d.get("placa", "").upper().replace("-", "").replace(" ", "")
-    if not (PLACA_MERCOSUL_RE.match(placa) or PLACA_ANTIGA_RE.match(placa)):
-        erros.append(f"placa inválida: {placa}")
-    if not RENAVAM_RE.match(d.get("renavam", "")):
-        erros.append("renavam deve ter 11 dígitos")
-    if not CHASSI_RE.match(d.get("chassi", "")):
-        erros.append("chassi inválido (17 chars alfanuméricos sem I/O/Q)")
-    if not d.get("vencimento_crlv"):
+    eh_veiculo = tipo_bem == "veiculo"
+    placa = (d.get("placa") or "").upper().replace("-", "").replace(" ", "")
+    renavam = d.get("renavam") or ""
+    chassi = (d.get("chassi") or "").upper()
+
+    if placa:
+        if not (PLACA_MERCOSUL_RE.match(placa) or PLACA_ANTIGA_RE.match(placa)):
+            erros.append(f"placa inválida: {placa}")
+    elif eh_veiculo:
+        erros.append("placa obrigatória")
+
+    if renavam:
+        if not RENAVAM_RE.match(renavam):
+            erros.append("renavam deve ter 11 dígitos")
+    elif eh_veiculo:
+        erros.append("renavam obrigatório")
+
+    if chassi:
+        # veículo exige VIN de 17 chars; equipamento aceita série livre
+        if eh_veiculo and not CHASSI_RE.match(chassi):
+            erros.append("chassi inválido (17 chars alfanuméricos sem I/O/Q)")
+    elif eh_veiculo:
+        erros.append("chassi obrigatório")
+
+    if eh_veiculo and not d.get("vencimento_crlv"):
         erros.append("vencimento_crlv obrigatório")
+
+    if tipo_bem == "equipamento" and not (d.get("marca") or d.get("modelo")):
+        erros.append("informe ao menos marca ou modelo do equipamento")
     return erros
 
 
@@ -698,10 +764,12 @@ async def vision_extract(
 
 
 class CadastroIn(BaseModel):
-    upload_id: str
-    placa: str
-    renavam: str
-    chassi: str
+    # tipo 'veiculo' exige CRLV; 'equipamento' (empilhadeira etc.) não
+    tipo_bem: str = "veiculo"
+    upload_id: Optional[str] = None          # opcional — cadastro manual não tem
+    placa: Optional[str] = None
+    renavam: Optional[str] = None
+    chassi: Optional[str] = None
     marca: Optional[str] = None
     modelo: Optional[str] = None
     ano_fabricacao: Optional[int] = None
@@ -709,7 +777,7 @@ class CadastroIn(BaseModel):
     cor: Optional[str] = None
     combustivel: Optional[str] = None
     cilindradas: Optional[int] = None
-    vencimento_crlv: str
+    vencimento_crlv: Optional[str] = None
     filial: int
     centro_custo: str
     km_atual: int = 0
@@ -745,35 +813,42 @@ def cadastrar_veiculo(
 
     # validações
     data = body.model_dump()
-    erros = validar_dados(data)
+    tipo_bem = data.get("tipo_bem") or "veiculo"
+    if tipo_bem not in ("veiculo", "equipamento"):
+        raise HTTPException(422, "tipo_bem deve ser 'veiculo' ou 'equipamento'")
+    erros = validar_dados(data, tipo_bem)
     if erros:
         raise HTTPException(422, {"erros": erros})
 
-    placa_norm = data["placa"].upper().replace("-", "").replace(" ", "")
+    placa_norm = ((data.get("placa") or "").upper().replace("-", "").replace(" ", "")) or None
+    renavam = data.get("renavam") or None
+    chassi = ((data.get("chassi") or "").upper()) or None
+    venc = data.get("vencimento_crlv") or None
 
     # transação atômica bens + veiculos
     conn = db()
     try:
         cur = conn.cursor()
-        # checa duplicata por placa+filial ativo (soft-delete aware)
-        dup = cur.execute("""
-            SELECT b.cod_interno FROM bens b
-            JOIN veiculos v ON v.bem_id = b.cod_interno
-            WHERE v.placa = ? AND b.filial = ? AND b.deleted_at IS NULL
-        """, (placa_norm, data["filial"])).fetchone()
-        if dup:
-            raise HTTPException(409, f"Placa {placa_norm} já cadastrada na filial {data['filial']}")
+        # checa duplicata por placa+filial ativo (só se tiver placa)
+        if placa_norm:
+            dup = cur.execute("""
+                SELECT b.cod_interno FROM bens b
+                JOIN veiculos v ON v.bem_id = b.cod_interno
+                WHERE v.placa = ? AND b.filial = ? AND b.deleted_at IS NULL
+            """, (placa_norm, data["filial"])).fetchone()
+            if dup:
+                raise HTTPException(409, f"Placa {placa_norm} já cadastrada na filial {data['filial']}")
 
         bem_id = uuid.uuid4().hex
         ts = now_iso()
-        status = derive_status(data["vencimento_crlv"])
+        status = derive_status(venc) if venc else "ativo"
 
         cur.execute("""
             INSERT INTO bens (cod_interno, filial, centro_custo, responsavel_user_id,
-                              responsavel_nome, status, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?)
+                              responsavel_nome, tipo_bem, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
         """, (bem_id, data["filial"], data["centro_custo"], user["user_id"],
-              user["nome"], status, ts, ts))
+              user["nome"], tipo_bem, status, ts, ts))
 
         cur.execute("""
             INSERT INTO veiculos (bem_id, placa, renavam, chassi, marca, modelo,
@@ -785,17 +860,17 @@ def cadastrar_veiculo(
                                   created_at, updated_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
-            bem_id, placa_norm, data["renavam"], data["chassi"],
+            bem_id, placa_norm, renavam, chassi,
             data.get("marca"), data.get("modelo"),
             data.get("ano_fabricacao"), data.get("ano_modelo"),
             data.get("cor"), data.get("combustivel"), data.get("cilindradas"),
-            data.get("km_atual", 0), data["vencimento_crlv"],
+            data.get("km_atual", 0), venc,
             json.dumps(data.get("dados_raw", {})),
             json.dumps({
                 "user_id": user["user_id"],
                 "timestamp": ts,
-                "upload_id": data["upload_id"],
-                "fonte": data.get("fonte") or "claude-vision-mock",
+                "upload_id": data.get("upload_id"),
+                "fonte": data.get("fonte") or ("manual" if not data.get("upload_id") else "claude-vision-mock"),
                 "filename_original": data.get("filename_original"),
             }),
             data.get("intervalo_km"),
@@ -806,13 +881,14 @@ def cadastrar_veiculo(
             data.get("margem_dias_aviso"),
             ts, ts,
         ))
-        # registra o CRLV na tabela documentos
-        cur.execute("""
-            INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
-                                    vencimento, criado_por, criado_por_nome, criado_em, ativo)
-            VALUES (?,?,'crlv',?,?,?,?,?,?,1)
-        """, (uuid.uuid4().hex, bem_id, data["upload_id"], data.get("filename_original"),
-              data["vencimento_crlv"], user["user_id"], user["nome"], ts))
+        # registra o CRLV na tabela documentos — só se houve upload + vencimento
+        if data.get("upload_id") and venc:
+            cur.execute("""
+                INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
+                                        vencimento, criado_por, criado_por_nome, criado_em, ativo)
+                VALUES (?,?,'crlv',?,?,?,?,?,?,1)
+            """, (uuid.uuid4().hex, bem_id, data["upload_id"], data.get("filename_original"),
+                  venc, user["user_id"], user["nome"], ts))
         conn.commit()
     except sqlite3.IntegrityError as e:
         conn.rollback()
@@ -845,7 +921,7 @@ def listar_veiculos(
 
     sql = """
         SELECT b.cod_interno AS bem_id, v.placa, v.modelo, v.marca,
-               b.filial, b.responsavel_nome, b.status, b.deleted_at,
+               b.filial, b.responsavel_nome, b.status, b.deleted_at, b.tipo_bem,
                v.vencimento_crlv, v.km_atual
         FROM bens b
         JOIN veiculos v ON v.bem_id = b.cod_interno
@@ -962,9 +1038,10 @@ def editar_veiculo(
         # busca atual pra fazer merge e validar
         conn = db()
         atual = conn.execute("""
-            SELECT v.placa, v.renavam, v.chassi, v.vencimento_crlv
+            SELECT v.placa, v.renavam, v.chassi, v.vencimento_crlv,
+                   v.marca, v.modelo, b.tipo_bem
             FROM veiculos v JOIN bens b ON b.cod_interno = v.bem_id
-            WHERE v.bem_id = ? AND b.deleted_at IS NULL
+            WHERE v.bem_id = ?
         """, (bem_id,)).fetchone()
         conn.close()
         if not atual:
@@ -974,8 +1051,10 @@ def editar_veiculo(
             "renavam": updates.get("renavam", atual["renavam"]),
             "chassi": updates.get("chassi", atual["chassi"]),
             "vencimento_crlv": updates.get("vencimento_crlv", atual["vencimento_crlv"]),
+            "marca": updates.get("marca", atual["marca"]),
+            "modelo": updates.get("modelo", atual["modelo"]),
         }
-        erros = validar_dados(merged)
+        erros = validar_dados(merged, atual["tipo_bem"] or "veiculo")
         if erros:
             raise HTTPException(422, {"erros": erros})
 
@@ -1298,6 +1377,7 @@ def _to_fleet_dto(row: dict) -> dict:
         "ano": row.get("ano_fabricacao"),
         "filial_id": row.get("filial"),
         "user_id": row.get("responsavel_user_id"),
+        "tipo_bem": row.get("tipo_bem") or "veiculo",
         "km_atual": row.get("km_atual"),
         "intervalo_km": row.get("intervalo_km"),
         "intervalo_meses": row.get("intervalo_meses"),
@@ -1321,7 +1401,7 @@ def fleet_list(
     require_role(user, "patrimonio:listar")
 
     sql = """
-        SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.status, b.deleted_at,
+        SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.status, b.deleted_at, b.tipo_bem,
                v.placa, v.marca, v.modelo, v.ano_fabricacao, v.km_atual,
                v.intervalo_km, v.intervalo_meses, v.km_ultima_troca,
                v.data_ultima_troca, v.margem_km_aviso, v.margem_dias_aviso,
@@ -1354,7 +1434,7 @@ def fleet_detail(vehicle_id: str, authorization: Optional[str] = Header(None)):
     conn = db()
     row = conn.execute("""
         SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.responsavel_nome,
-               b.status, b.deleted_at,
+               b.status, b.deleted_at, b.tipo_bem,
                v.placa, v.marca, v.modelo, v.ano_fabricacao, v.ano_modelo, v.cor,
                v.combustivel, v.cilindradas, v.km_atual, v.renavam, v.chassi,
                v.intervalo_km, v.intervalo_meses, v.km_ultima_troca,
