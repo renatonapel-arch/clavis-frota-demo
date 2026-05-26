@@ -120,11 +120,21 @@ def init_db() -> None:
     cur.executescript("""
         CREATE TABLE IF NOT EXISTS bens (
           cod_interno          TEXT PRIMARY KEY,
+          codigo_patrimonial   TEXT UNIQUE,
           filial               INTEGER NOT NULL,
           centro_custo         TEXT NOT NULL,
           responsavel_user_id  INTEGER NOT NULL,
           responsavel_nome     TEXT NOT NULL,
           data_aquisicao       TEXT,
+          valor_aquisicao      REAL,
+          fornecedor           TEXT,
+          nf_numero            TEXT,
+          nf_chave             TEXT,
+          valor_residual       REAL DEFAULT 0,
+          vida_util_meses      INTEGER,
+          metodo_depreciacao   TEXT DEFAULT 'linear',
+          estado_operacional   TEXT DEFAULT 'disponivel'
+                               CHECK (estado_operacional IN ('disponivel','em_uso','em_manutencao','quebrado','a_venda','baixado')),
           tipo_bem             TEXT NOT NULL DEFAULT 'veiculo'
                                CHECK (tipo_bem IN ('veiculo','equipamento')),
           status               TEXT NOT NULL DEFAULT 'ativo'
@@ -133,6 +143,28 @@ def init_db() -> None:
           updated_at           TEXT NOT NULL,
           deleted_at           TEXT
         );
+
+        -- histórico imutável de movimentações patrimoniais
+        CREATE TABLE IF NOT EXISTS movimentacoes (
+          id                 TEXT PRIMARY KEY,
+          bem_id             TEXT NOT NULL REFERENCES bens(cod_interno) ON DELETE CASCADE,
+          tipo               TEXT NOT NULL,  -- aquisicao, transferencia, troca_responsavel, mudanca_estado, baixa, venda, reativacao
+          de_filial          INTEGER,
+          para_filial        INTEGER,
+          de_responsavel     INTEGER,
+          para_responsavel   INTEGER,
+          de_estado          TEXT,
+          para_estado        TEXT,
+          motivo             TEXT,
+          valor              REAL,
+          comprador          TEXT,
+          resultado_contabil REAL,
+          data_evento        TEXT,
+          executado_por      INTEGER,
+          executado_por_nome TEXT,
+          created_at         TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mov_bem ON movimentacoes(bem_id, created_at DESC);
 
         -- placa/renavam/chassi/vencimento_crlv são nullable: equipamentos
         -- (empilhadeira etc.) não têm CRLV. UNIQUE permite múltiplos NULL no SQLite.
@@ -208,11 +240,48 @@ def init_db() -> None:
         if col not in cols:
             cur.execute(sql)
 
-    # migration: tipo_bem em bens (pra equipamentos sem CRLV)
+    # migration: colunas novas em bens (tipo_bem + bloco patrimonial)
     cur.execute("PRAGMA table_info(bens)")
     bcols = {r["name"] for r in cur.fetchall()}
-    if "tipo_bem" not in bcols:
-        cur.execute("ALTER TABLE bens ADD COLUMN tipo_bem TEXT NOT NULL DEFAULT 'veiculo'")
+    bens_migrations = [
+        ("tipo_bem",            "ALTER TABLE bens ADD COLUMN tipo_bem TEXT NOT NULL DEFAULT 'veiculo'"),
+        ("codigo_patrimonial",  "ALTER TABLE bens ADD COLUMN codigo_patrimonial TEXT"),
+        ("valor_aquisicao",     "ALTER TABLE bens ADD COLUMN valor_aquisicao REAL"),
+        ("fornecedor",          "ALTER TABLE bens ADD COLUMN fornecedor TEXT"),
+        ("nf_numero",           "ALTER TABLE bens ADD COLUMN nf_numero TEXT"),
+        ("nf_chave",            "ALTER TABLE bens ADD COLUMN nf_chave TEXT"),
+        ("valor_residual",      "ALTER TABLE bens ADD COLUMN valor_residual REAL DEFAULT 0"),
+        ("vida_util_meses",     "ALTER TABLE bens ADD COLUMN vida_util_meses INTEGER"),
+        ("metodo_depreciacao",  "ALTER TABLE bens ADD COLUMN metodo_depreciacao TEXT DEFAULT 'linear'"),
+        ("estado_operacional",  "ALTER TABLE bens ADD COLUMN estado_operacional TEXT DEFAULT 'disponivel'"),
+    ]
+    for col, sql in bens_migrations:
+        if col not in bcols:
+            cur.execute(sql)
+
+    # backfill codigo_patrimonial: PAT-VEI-NNN (veiculo) / PAT-EQP-NNN (equipamento)
+    falta_codigo = cur.execute(
+        "SELECT cod_interno, tipo_bem FROM bens WHERE codigo_patrimonial IS NULL ORDER BY created_at, cod_interno"
+    ).fetchall()
+    if falta_codigo:
+        # próximo número por prefixo, considerando os já existentes
+        def _prox(prefixo):
+            row = cur.execute(
+                "SELECT codigo_patrimonial FROM bens WHERE codigo_patrimonial LIKE ? ORDER BY codigo_patrimonial DESC LIMIT 1",
+                (prefixo + "%",)).fetchone()
+            if row and row["codigo_patrimonial"]:
+                try:
+                    return int(row["codigo_patrimonial"].rsplit("-", 1)[1]) + 1
+                except Exception:
+                    pass
+            return 1
+        contadores = {"PAT-VEI": _prox("PAT-VEI"), "PAT-EQP": _prox("PAT-EQP")}
+        for r in falta_codigo:
+            pref = "PAT-EQP" if (r["tipo_bem"] == "equipamento") else "PAT-VEI"
+            codigo = f"{pref}-{contadores[pref]:03d}"
+            contadores[pref] += 1
+            cur.execute("UPDATE bens SET codigo_patrimonial = ? WHERE cod_interno = ?",
+                        (codigo, r["cod_interno"]))
 
     # migration: relaxa NOT NULL de placa/renavam/chassi/vencimento_crlv
     # (DBs antigos têm NOT NULL — rebuild da tabela preservando os dados)
@@ -570,6 +639,57 @@ def validar_e_salvar_arquivo(content: bytes, content_type: str, filename: str) -
     return upload_id
 
 
+def gerar_codigo_patrimonial(cur, tipo_bem: str) -> str:
+    """Gera o próximo código: PAT-VEI-NNN (veículo) / PAT-EQP-NNN (equipamento)."""
+    pref = "PAT-EQP" if tipo_bem == "equipamento" else "PAT-VEI"
+    row = cur.execute(
+        "SELECT codigo_patrimonial FROM bens WHERE codigo_patrimonial LIKE ? "
+        "ORDER BY codigo_patrimonial DESC LIMIT 1", (pref + "%",)).fetchone()
+    n = 1
+    if row and row["codigo_patrimonial"]:
+        try:
+            n = int(row["codigo_patrimonial"].rsplit("-", 1)[1]) + 1
+        except Exception:
+            pass
+    return f"{pref}-{n:03d}"
+
+
+def meses_entre(d1: date, d2: date) -> int:
+    """Meses cheios decorridos entre d1 e d2 (d2 >= d1)."""
+    return (d2.year - d1.year) * 12 + (d2.month - d1.month) - (1 if d2.day < d1.day else 0)
+
+
+def calcular_depreciacao(bem: dict) -> Optional[dict]:
+    """Depreciação linear. Retorna None se faltam dados (valor + data + vida útil)."""
+    valor = bem.get("valor_aquisicao")
+    data_aq = bem.get("data_aquisicao")
+    vida = bem.get("vida_util_meses")
+    if not valor or not data_aq or not vida:
+        return None
+    try:
+        d_aq = date.fromisoformat(data_aq)
+    except Exception:
+        return None
+    residual = bem.get("valor_residual") or 0
+    meses = max(0, meses_entre(d_aq, date.today()))
+    depreciavel = max(0.0, float(valor) - float(residual))
+    deprec_mensal = depreciavel / vida if vida else 0
+    deprec_acum = min(deprec_mensal * meses, depreciavel)
+    valor_contabil = round(float(valor) - deprec_acum, 2)
+    return {
+        "valor_aquisicao": round(float(valor), 2),
+        "data_aquisicao": data_aq,
+        "valor_residual": round(float(residual), 2),
+        "vida_util_meses": vida,
+        "metodo": bem.get("metodo_depreciacao") or "linear",
+        "meses_decorridos": meses,
+        "depreciacao_mensal": round(deprec_mensal, 2),
+        "depreciacao_acumulada": round(deprec_acum, 2),
+        "valor_contabil_atual": valor_contabil,
+        "percentual_depreciado": round((deprec_acum / depreciavel * 100) if depreciavel else 0, 1),
+    }
+
+
 def status_documento(vencimento: Optional[str]) -> tuple[str, Optional[int]]:
     """Retorna (status, dias_para_vencer) de um documento pela data de vencimento."""
     if not vencimento:
@@ -781,6 +901,15 @@ class CadastroIn(BaseModel):
     filial: int
     centro_custo: str
     km_atual: int = 0
+    # bloco patrimonial (todos opcionais — preenche no cadastro ou depois)
+    data_aquisicao: Optional[str] = None
+    valor_aquisicao: Optional[float] = None
+    fornecedor: Optional[str] = None
+    nf_numero: Optional[str] = None
+    nf_chave: Optional[str] = None
+    valor_residual: Optional[float] = None
+    vida_util_meses: Optional[int] = None
+    estado_operacional: Optional[str] = None
     dados_raw: dict = Field(default_factory=dict)
     # metadados do upload (pra trilhar de onde veio a extração)
     fonte: Optional[str] = None             # "claude-vision-real" | "claude-vision-mock" | "manual"
@@ -842,13 +971,35 @@ def cadastrar_veiculo(
         bem_id = uuid.uuid4().hex
         ts = now_iso()
         status = derive_status(venc) if venc else "ativo"
+        codigo_pat = gerar_codigo_patrimonial(cur, tipo_bem)
+        # vida útil default: 60 meses (5 anos) p/ veículo, 120 (10 anos) p/ equipamento
+        vida_util = data.get("vida_util_meses")
+        if vida_util is None:
+            vida_util = 60 if tipo_bem == "veiculo" else 120
+        estado_op = data.get("estado_operacional") or "disponivel"
 
         cur.execute("""
-            INSERT INTO bens (cod_interno, filial, centro_custo, responsavel_user_id,
-                              responsavel_nome, tipo_bem, status, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
-        """, (bem_id, data["filial"], data["centro_custo"], user["user_id"],
-              user["nome"], tipo_bem, status, ts, ts))
+            INSERT INTO bens (cod_interno, codigo_patrimonial, filial, centro_custo,
+                              responsavel_user_id, responsavel_nome, data_aquisicao,
+                              valor_aquisicao, fornecedor, nf_numero, nf_chave,
+                              valor_residual, vida_util_meses, metodo_depreciacao,
+                              estado_operacional, tipo_bem, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (bem_id, codigo_pat, data["filial"], data["centro_custo"], user["user_id"],
+              user["nome"], data.get("data_aquisicao"), data.get("valor_aquisicao"),
+              data.get("fornecedor"), data.get("nf_numero"), data.get("nf_chave"),
+              data.get("valor_residual") or 0, vida_util, "linear",
+              estado_op, tipo_bem, status, ts, ts))
+
+        # movimentação inicial de aquisição (timeline)
+        cur.execute("""
+            INSERT INTO movimentacoes (id, bem_id, tipo, para_filial, para_responsavel,
+                                       para_estado, valor, data_evento, executado_por,
+                                       executado_por_nome, created_at)
+            VALUES (?,?,'aquisicao',?,?,?,?,?,?,?,?)
+        """, (uuid.uuid4().hex, bem_id, data["filial"], user["user_id"], estado_op,
+              data.get("valor_aquisicao"), data.get("data_aquisicao") or ts[:10],
+              user["user_id"], user["nome"], ts))
 
         cur.execute("""
             INSERT INTO veiculos (bem_id, placa, renavam, chassi, marca, modelo,
@@ -898,6 +1049,7 @@ def cadastrar_veiculo(
 
     resp = {
         "bem_id": bem_id,
+        "codigo_patrimonial": codigo_pat,
         "placa": placa_norm,
         "status": status,
         "responsavel": user["nome"],
@@ -1007,9 +1159,20 @@ class VeiculoFullPatch(BaseModel):
     cilindradas: Optional[int] = Field(default=None, ge=0)
     vencimento_crlv: Optional[str] = None
     km_atual: Optional[int] = Field(default=None, ge=0)
+    # bloco patrimonial
+    data_aquisicao: Optional[str] = None
+    valor_aquisicao: Optional[float] = Field(default=None, ge=0)
+    fornecedor: Optional[str] = None
+    nf_numero: Optional[str] = None
+    nf_chave: Optional[str] = None
+    valor_residual: Optional[float] = Field(default=None, ge=0)
+    vida_util_meses: Optional[int] = Field(default=None, ge=1)
+    estado_operacional: Optional[str] = None
 
 
-_BENS_FIELDS = {"filial", "centro_custo", "responsavel_user_id", "responsavel_nome", "status"}
+_BENS_FIELDS = {"filial", "centro_custo", "responsavel_user_id", "responsavel_nome", "status",
+                "data_aquisicao", "valor_aquisicao", "fornecedor", "nf_numero", "nf_chave",
+                "valor_residual", "vida_util_meses", "estado_operacional"}
 _VEICULOS_FIELDS = {"placa", "renavam", "chassi", "marca", "modelo", "ano_fabricacao",
                     "ano_modelo", "cor", "combustivel", "cilindradas", "vencimento_crlv", "km_atual"}
 
@@ -1124,18 +1287,144 @@ def editar_veiculo(
 
 @app.delete("/api/patrimonio/veiculos/{bem_id}")
 def baixar_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
+    """Baixa simples (sem motivo) — mantida pra compat. Registra movimentação."""
     user = auth_check(authorization)
     require_role(user, "patrimonio:admin")
     conn = db()
     cur = conn.cursor()
-    cur.execute("UPDATE bens SET deleted_at = ?, status = 'baixado' WHERE cod_interno = ?",
+    cur.execute("UPDATE bens SET deleted_at = ?, status = 'baixado', estado_operacional='baixado' WHERE cod_interno = ?",
                 (now_iso(), bem_id))
     if cur.rowcount == 0:
         conn.close()
         raise HTTPException(404, "Veículo não encontrado")
+    cur.execute("""INSERT INTO movimentacoes (id, bem_id, tipo, para_estado, motivo,
+                   data_evento, executado_por, executado_por_nome, created_at)
+                   VALUES (?,?,'baixa','baixado','baixa simples',?,?,?,?)""",
+                (uuid.uuid4().hex, bem_id, now_iso()[:10], user["user_id"], user["nome"], now_iso()))
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+class BaixaIn(BaseModel):
+    motivo: str = "venda"   # venda, sucata, perda, roubo, fim_vida, outro
+    valor: Optional[float] = Field(default=None, ge=0)   # valor de venda
+    comprador: Optional[str] = None
+    data: Optional[str] = None   # data do evento YYYY-MM-DD
+    observacao: Optional[str] = None
+
+
+@app.post("/api/patrimonio/veiculos/{bem_id}/baixar")
+def baixar_veiculo_completo(bem_id: str, body: BaixaIn, authorization: Optional[str] = Header(None)):
+    """Baixa patrimonial com motivo (venda/sucata/perda/roubo/fim_vida).
+    Pra venda: calcula resultado contábil (valor de venda - valor contábil depreciado)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:admin")
+    motivos_validos = {"venda", "sucata", "perda", "roubo", "fim_vida", "outro"}
+    if body.motivo not in motivos_validos:
+        raise HTTPException(422, f"motivo deve ser um de: {', '.join(motivos_validos)}")
+    if body.data:
+        try:
+            date.fromisoformat(body.data)
+        except ValueError:
+            raise HTTPException(422, "data deve ser YYYY-MM-DD")
+
+    conn = db()
+    bem = conn.execute("SELECT * FROM bens WHERE cod_interno = ? AND deleted_at IS NULL", (bem_id,)).fetchone()
+    if not bem:
+        conn.close()
+        raise HTTPException(404, "Veículo não encontrado ou já baixado")
+    bem = dict(bem)
+
+    # resultado contábil (só faz sentido na venda, e se há valor + depreciação calculável)
+    resultado = None
+    deprec = calcular_depreciacao(bem)
+    if body.motivo == "venda" and body.valor is not None and deprec:
+        resultado = round(float(body.valor) - deprec["valor_contabil_atual"], 2)
+
+    ts = now_iso()
+    tipo_mov = "venda" if body.motivo == "venda" else "baixa"
+    cur = conn.cursor()
+    cur.execute("""UPDATE bens SET deleted_at = ?, status = 'baixado',
+                   estado_operacional = 'baixado', updated_at = ? WHERE cod_interno = ?""",
+                (ts, ts, bem_id))
+    cur.execute("""INSERT INTO movimentacoes (id, bem_id, tipo, de_estado, para_estado,
+                   motivo, valor, comprador, resultado_contabil, data_evento,
+                   executado_por, executado_por_nome, created_at)
+                   VALUES (?,?,?,?,'baixado',?,?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex, bem_id, tipo_mov, bem.get("estado_operacional"),
+                 body.motivo, body.valor, body.comprador, resultado,
+                 body.data or ts[:10], user["user_id"], user["nome"], ts))
+    conn.commit()
+    conn.close()
+    return {
+        "id": bem_id, "motivo": body.motivo, "valor": body.valor,
+        "comprador": body.comprador, "resultado_contabil": resultado,
+        "valor_contabil_na_baixa": deprec["valor_contabil_atual"] if deprec else None,
+    }
+
+
+@app.post("/api/patrimonio/veiculos/{bem_id}/transferir")
+def transferir_veiculo(bem_id: str, body: dict, authorization: Optional[str] = Header(None)):
+    """Transfere o bem pra outra filial, registrando a movimentação."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:reatribuir")
+    para_filial = body.get("para_filial")
+    if not para_filial:
+        raise HTTPException(422, "informe para_filial")
+    conn = db()
+    bem = conn.execute("SELECT filial, centro_custo FROM bens WHERE cod_interno = ? AND deleted_at IS NULL",
+                       (bem_id,)).fetchone()
+    if not bem:
+        conn.close()
+        raise HTTPException(404, "Veículo não encontrado")
+    de_filial = bem["filial"]
+    if int(para_filial) == de_filial:
+        conn.close()
+        raise HTTPException(422, "filial de destino igual à atual")
+    novo_cc = body.get("centro_custo")
+    ts = now_iso()
+    cur = conn.cursor()
+    if novo_cc:
+        cur.execute("UPDATE bens SET filial = ?, centro_custo = ?, updated_at = ? WHERE cod_interno = ?",
+                    (para_filial, novo_cc, ts, bem_id))
+    else:
+        cur.execute("UPDATE bens SET filial = ?, updated_at = ? WHERE cod_interno = ?",
+                    (para_filial, ts, bem_id))
+    cur.execute("""INSERT INTO movimentacoes (id, bem_id, tipo, de_filial, para_filial,
+                   motivo, data_evento, executado_por, executado_por_nome, created_at)
+                   VALUES (?,?,'transferencia',?,?,?,?,?,?,?)""",
+                (uuid.uuid4().hex, bem_id, de_filial, para_filial, body.get("motivo"),
+                 ts[:10], user["user_id"], user["nome"], ts))
+    conn.commit()
+    conn.close()
+    return {"id": bem_id, "de_filial": de_filial, "para_filial": para_filial}
+
+
+@app.get("/api/patrimonio/veiculos/{bem_id}/movimentacoes")
+def listar_movimentacoes(bem_id: str, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    conn = db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM movimentacoes WHERE bem_id = ? ORDER BY created_at DESC", (bem_id,)).fetchall()]
+    conn.close()
+    return {"movimentacoes": rows}
+
+
+@app.get("/api/patrimonio/veiculos/{bem_id}/depreciacao")
+def depreciacao_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    conn = db()
+    bem = conn.execute("SELECT * FROM bens WHERE cod_interno = ?", (bem_id,)).fetchone()
+    conn.close()
+    if not bem:
+        raise HTTPException(404, "Veículo não encontrado")
+    deprec = calcular_depreciacao(dict(bem))
+    if not deprec:
+        return {"calculavel": False, "motivo": "faltam dados de aquisição (valor, data e vida útil)"}
+    return {"calculavel": True, **deprec}
 
 
 # ---------- documentos do veículo (CRLV / IPVA / Seguro) ----------
@@ -1375,9 +1664,27 @@ def _to_fleet_dto(row: dict) -> dict:
         "marca": row.get("marca"),
         "modelo": row.get("modelo"),
         "ano": row.get("ano_fabricacao"),
+        "ano_modelo": row.get("ano_modelo"),
+        "cor": row.get("cor"),
+        "combustivel": row.get("combustivel"),
+        "cilindradas": row.get("cilindradas"),
+        "renavam": row.get("renavam"),
+        "chassi": row.get("chassi"),
         "filial_id": row.get("filial"),
         "user_id": row.get("responsavel_user_id"),
+        "responsavel_nome": row.get("responsavel_nome"),
+        "centro_custo": row.get("centro_custo"),
         "tipo_bem": row.get("tipo_bem") or "veiculo",
+        "codigo_patrimonial": row.get("codigo_patrimonial"),
+        "estado_operacional": row.get("estado_operacional"),
+        # bloco patrimonial
+        "data_aquisicao": row.get("data_aquisicao"),
+        "valor_aquisicao": row.get("valor_aquisicao"),
+        "fornecedor": row.get("fornecedor"),
+        "nf_numero": row.get("nf_numero"),
+        "nf_chave": row.get("nf_chave"),
+        "valor_residual": row.get("valor_residual"),
+        "vida_util_meses": row.get("vida_util_meses"),
         "km_atual": row.get("km_atual"),
         "intervalo_km": row.get("intervalo_km"),
         "intervalo_meses": row.get("intervalo_meses"),
@@ -1386,6 +1693,7 @@ def _to_fleet_dto(row: dict) -> dict:
         "margem_km_aviso": row.get("margem_km_aviso"),
         "margem_dias_aviso": row.get("margem_dias_aviso"),
         "ativo": row.get("status") not in ("baixado",) and row.get("deleted_at") is None,
+        "status": row.get("status"),
         "vencimento_crlv": row.get("vencimento_crlv"),
     }
 
@@ -1402,6 +1710,7 @@ def fleet_list(
 
     sql = """
         SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.status, b.deleted_at, b.tipo_bem,
+               b.codigo_patrimonial, b.estado_operacional, b.responsavel_nome,
                v.placa, v.marca, v.modelo, v.ano_fabricacao, v.km_atual,
                v.intervalo_km, v.intervalo_meses, v.km_ultima_troca,
                v.data_ultima_troca, v.margem_km_aviso, v.margem_dias_aviso,
@@ -1434,7 +1743,10 @@ def fleet_detail(vehicle_id: str, authorization: Optional[str] = Header(None)):
     conn = db()
     row = conn.execute("""
         SELECT b.cod_interno AS bem_id, b.filial, b.responsavel_user_id, b.responsavel_nome,
-               b.status, b.deleted_at, b.tipo_bem,
+               b.status, b.deleted_at, b.tipo_bem, b.centro_custo,
+               b.codigo_patrimonial, b.estado_operacional, b.data_aquisicao,
+               b.valor_aquisicao, b.fornecedor, b.nf_numero, b.nf_chave,
+               b.valor_residual, b.vida_util_meses, b.metodo_depreciacao,
                v.placa, v.marca, v.modelo, v.ano_fabricacao, v.ano_modelo, v.cor,
                v.combustivel, v.cilindradas, v.km_atual, v.renavam, v.chassi,
                v.intervalo_km, v.intervalo_meses, v.km_ultima_troca,
@@ -1446,7 +1758,9 @@ def fleet_detail(vehicle_id: str, authorization: Optional[str] = Header(None)):
     conn.close()
     if not row:
         raise HTTPException(404, "Veículo não encontrado")
-    return _to_fleet_dto(dict(row))
+    dto = _to_fleet_dto(dict(row))
+    dto["depreciacao"] = calcular_depreciacao(dict(row))
+    return dto
 
 
 class FleetPatch(BaseModel):

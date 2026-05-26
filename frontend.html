@@ -143,6 +143,7 @@
         <table class="w-full text-sm">
           <thead class="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
+              <th class="text-left px-4 py-3">Cód.</th>
               <th class="text-left px-4 py-3">Placa</th>
               <th class="text-left px-4 py-3">Modelo</th>
               <th class="text-left px-4 py-3">Filial</th>
@@ -652,6 +653,7 @@ function renderRows(rows) {
     const statusCls = v.ativo ? 'status-ativo' : 'status-baixado';
     return `
     <tr class="hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
+      <td class="px-4 py-3 font-mono text-xs text-violet-700">${v.codigo_patrimonial || '—'}</td>
       <td class="px-4 py-3 font-mono font-semibold">${v.placa || '<span class="text-slate-400 not-italic font-sans">— equipamento</span>'}</td>
       <td class="px-4 py-3">${v.marca||''} ${v.modelo||''}</td>
       <td class="px-4 py-3 text-slate-600">${v.filial_id}</td>
@@ -667,6 +669,7 @@ function renderRows(rows) {
     <div class="bg-white rounded-xl border border-slate-200 p-4 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
       <div class="flex items-start justify-between mb-2">
         <div>
+          <div class="text-[10px] font-mono text-violet-700">${v.codigo_patrimonial||''}</div>
           <div class="font-mono font-bold text-lg">${v.placa || '<span class="text-slate-400 text-sm font-sans">equipamento</span>'}</div>
           <div class="text-sm text-slate-600">${v.marca||''} ${v.modelo||''}</div>
         </div>
@@ -741,17 +744,19 @@ async function abrirDetalhe(id) {
   showView('detalhe');
   $('detalhe-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
   try {
-    const [veic, docs] = await Promise.all([
+    const [veic, docs, movResp] = await Promise.all([
       api('/api/v1/fleet/vehicles/' + id),
       api('/api/v1/fleet/vehicles/' + id + '/documents'),
+      api('/api/patrimonio/veiculos/' + id + '/movimentacoes'),
     ]);
+    const movs = movResp.movimentacoes || [];
     const oleo = statusTrocaOleo(veic);
     const statusBadge = veic.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full font-medium">ativo</span>'
                                    : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
-    const acaoBtn = veic.ativo
-      ? `<button onclick="baixarVeiculo('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>`
+    const acaoBtns = veic.ativo
+      ? `<button onclick="abrirModalTransferir('${id}', ${veic.filial_id})" class="text-slate-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="arrow-left-right" class="w-4 h-4"></i> Transferir</button>
+         <button onclick="abrirModalBaixa('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="dollar-sign" class="w-4 h-4"></i> Vender / Baixar</button>`
       : `<button onclick="reativarVeiculo('${id}')" class="text-emerald-600 hover:bg-emerald-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Reativar</button>`;
-    // ordena docs: crlv, ipva, seguro
     const ordem = {crlv:0, ipva:1, seguro:2};
     const docsOrdenados = [...docs.documents].sort((a,b)=>(ordem[a.type]??9)-(ordem[b.type]??9));
 
@@ -759,7 +764,11 @@ async function abrirDetalhe(id) {
       <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4" id="header-card">
         <div class="flex items-start justify-between mb-4">
           <div>
-            <div class="font-mono font-bold text-2xl">${veic.placa || (veic.marca||'') + ' ' + (veic.modelo||'') || 'Equipamento'}</div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-mono px-2 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">${veic.codigo_patrimonial || '—'}</span>
+              ${badgeEstado(veic.estado_operacional)}
+            </div>
+            <div class="font-mono font-bold text-2xl mt-1">${veic.placa || (veic.marca||'') + ' ' + (veic.modelo||'') || 'Equipamento'}</div>
             <div class="text-slate-600 mt-1">
               ${veic.placa ? (veic.marca||'') + ' ' + (veic.modelo||'') + ' · ' : ''}${veic.ano||'—'}
               ${veic.tipo_bem === 'equipamento' ? '<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium align-middle">equipamento</span>' : ''}
@@ -770,12 +779,12 @@ async function abrirDetalhe(id) {
             <button onclick="iniciarEdicaoDados('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1">
               <i data-lucide="edit-2" class="w-4 h-4"></i> Editar dados
             </button>
-            ${acaoBtn}
+            ${acaoBtns}
           </div>
         </div>
         <dl class="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm border-t pt-4">
           <div><dt class="text-xs text-slate-500">Filial</dt><dd class="font-medium">${veic.filial_id}</dd></div>
-          <div><dt class="text-xs text-slate-500">Motorista</dt><dd class="font-medium">user ${veic.user_id}</dd></div>
+          <div><dt class="text-xs text-slate-500">Centro custo</dt><dd class="font-medium">${veic.centro_custo||'—'}</dd></div>
           <div><dt class="text-xs text-slate-500">RENAVAM</dt><dd class="font-mono text-sm">${veic.renavam||'—'}</dd></div>
           <div><dt class="text-xs text-slate-500">Chassi</dt><dd class="font-mono text-sm">${veic.chassi||'—'}</dd></div>
           <div>
@@ -788,7 +797,9 @@ async function abrirDetalhe(id) {
         </dl>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      ${renderCardPatrimonio(veic)}
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         <div class="bg-white rounded-xl border border-slate-200 p-6" id="manut-card">
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="droplet" class="w-4 h-4"></i> Manutenção (oil-change)</h3>
@@ -812,11 +823,109 @@ async function abrirDetalhe(id) {
           </div>
         </div>
       </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-6">
+        <h3 class="text-sm font-semibold uppercase text-slate-500 mb-4 flex items-center gap-2"><i data-lucide="history" class="w-4 h-4"></i> Movimentações</h3>
+        ${renderTimeline(movs)}
+      </div>
     `;
     lucide.createIcons();
   } catch (e) {
     $('detalhe-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
   }
+}
+
+// ===== Helpers de render do bloco patrimonial =====
+function badgeEstado(estado) {
+  const map = {
+    disponivel: ['disponível','bg-emerald-100 text-emerald-700'],
+    em_uso: ['em uso','bg-blue-100 text-blue-700'],
+    em_manutencao: ['em manutenção','bg-amber-100 text-amber-700'],
+    quebrado: ['quebrado','bg-red-100 text-red-700'],
+    a_venda: ['à venda','bg-violet-100 text-violet-700'],
+    baixado: ['baixado','bg-slate-100 text-slate-500'],
+  };
+  const [label, cls] = map[estado] || [estado||'—','bg-slate-100 text-slate-500'];
+  return `<span class="text-[11px] px-2 py-0.5 rounded-full font-medium ${cls}">${label}</span>`;
+}
+
+function fmtMoeda(v) {
+  if (v == null) return '—';
+  return 'R$ ' + Number(v).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function renderCardPatrimonio(veic) {
+  const dep = veic.depreciacao;
+  const aquisicao = `
+    <div class="bg-white rounded-xl border border-slate-200 p-6">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="receipt" class="w-4 h-4"></i> Aquisição & Patrimônio</h3>
+        <button onclick="iniciarEdicaoDados('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1"><i data-lucide="edit-2" class="w-3.5 h-3.5"></i> Editar</button>
+      </div>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between"><dt class="text-slate-500">Código patrimonial</dt><dd class="font-mono font-semibold">${veic.codigo_patrimonial||'—'}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Data de aquisição</dt><dd>${fmtDate(veic.data_aquisicao)}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Valor de aquisição</dt><dd class="font-medium">${fmtMoeda(veic.valor_aquisicao)}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Fornecedor</dt><dd>${veic.fornecedor||'—'}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Nota fiscal</dt><dd>${veic.nf_numero||'—'}</dd></div>
+        <div class="flex justify-between pt-2 border-t"><dt class="text-slate-500">Estado operacional</dt><dd>${badgeEstado(veic.estado_operacional)}</dd></div>
+      </dl>
+    </div>`;
+  const deprec = dep ? `
+    <div class="bg-white rounded-xl border border-slate-200 p-6">
+      <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4"></i> Depreciação (${dep.metodo})</h3>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between"><dt class="text-slate-500">Vida útil</dt><dd>${dep.vida_util_meses} meses</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Decorrido</dt><dd>${dep.meses_decorridos} meses (${dep.percentual_depreciado}%)</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Depreciação acumulada</dt><dd class="text-red-600">− ${fmtMoeda(dep.depreciacao_acumulada)}</dd></div>
+        <div class="flex justify-between pt-2 border-t"><dt class="text-slate-500 font-medium">Valor contábil hoje</dt><dd class="font-bold text-base">${fmtMoeda(dep.valor_contabil_atual)}</dd></div>
+      </dl>
+      <div class="mt-3 h-2 bg-slate-100 rounded-full overflow-hidden">
+        <div class="h-full bg-violet-500" style="width:${Math.min(100,dep.percentual_depreciado)}%"></div>
+      </div>
+    </div>` : `
+    <div class="bg-white rounded-xl border border-dashed border-slate-300 p-6 flex items-center justify-center text-center">
+      <div class="text-sm text-slate-400">
+        <i data-lucide="trending-down" class="w-6 h-6 mx-auto mb-2"></i>
+        Depreciação indisponível.<br>Preencha valor e data de aquisição em <strong>Editar</strong>.
+      </div>
+    </div>`;
+  return `<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">${aquisicao}${deprec}</div>`;
+}
+
+const MOV_LABEL = {
+  aquisicao: ['Aquisição','plus-circle','text-emerald-600'],
+  transferencia: ['Transferência','arrow-left-right','text-blue-600'],
+  troca_responsavel: ['Troca de responsável','user','text-slate-600'],
+  mudanca_estado: ['Mudança de estado','refresh-cw','text-amber-600'],
+  baixa: ['Baixa','archive','text-red-600'],
+  venda: ['Venda','dollar-sign','text-violet-600'],
+  reativacao: ['Reativação','rotate-ccw','text-emerald-600'],
+};
+
+function renderTimeline(movs) {
+  if (!movs.length) return '<div class="text-sm text-slate-400">Sem movimentações registradas.</div>';
+  return `<div class="space-y-4">` + movs.map(m => {
+    const [label, icon, cor] = MOV_LABEL[m.tipo] || [m.tipo,'circle','text-slate-500'];
+    let detalhe = '';
+    if (m.tipo === 'transferencia') detalhe = `filial ${m.de_filial} → ${m.para_filial}`;
+    else if (m.tipo === 'venda') detalhe = `${fmtMoeda(m.valor)}${m.comprador ? ' · '+m.comprador : ''}${m.resultado_contabil!=null ? ' · '+(m.resultado_contabil>=0?'lucro ':'prejuízo ')+fmtMoeda(Math.abs(m.resultado_contabil)) : ''}`;
+    else if (m.tipo === 'baixa') detalhe = `motivo: ${m.motivo||'—'}`;
+    else if (m.tipo === 'aquisicao') detalhe = m.valor!=null ? fmtMoeda(m.valor) : '';
+    return `
+      <div class="flex gap-3">
+        <div class="flex flex-col items-center">
+          <div class="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center ${cor}"><i data-lucide="${icon}" class="w-4 h-4"></i></div>
+          <div class="flex-1 w-px bg-slate-200 mt-1"></div>
+        </div>
+        <div class="pb-2 flex-1">
+          <div class="font-medium text-sm">${label}</div>
+          ${detalhe ? `<div class="text-xs text-slate-600">${detalhe}</div>` : ''}
+          ${m.motivo && m.tipo!=='baixa' ? `<div class="text-xs text-slate-500 italic">${m.motivo}</div>` : ''}
+          <div class="text-[11px] text-slate-400 mt-0.5">${fmtDate(m.data_evento)} · ${m.executado_por_nome||'—'}</div>
+        </div>
+      </div>`;
+  }).join('') + `</div>`;
 }
 
 async function reativarVeiculo(id) {
@@ -913,12 +1022,45 @@ async function iniciarEdicaoDados(id) {
         <input id="ev-resp-nome" value="${veic.responsavel_nome||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
       </div>
       <div>
-        <label class="text-xs text-slate-500">Status</label>
-        <select id="ev-status" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1">
-          ${['ativo','manutencao','vencido','baixado'].map(s => `<option ${s === veic.status ? 'selected' : ''}>${s}</option>`).join('')}
+        <label class="text-xs text-slate-500">Estado operacional</label>
+        <select id="ev-estado" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1">
+          ${[['disponivel','disponível'],['em_uso','em uso'],['em_manutencao','em manutenção'],['quebrado','quebrado'],['a_venda','à venda']].map(([v,l]) => `<option value="${v}" ${v === veic.estado_operacional ? 'selected' : ''}>${l}</option>`).join('')}
         </select>
       </div>
     </div>
+
+    <div class="text-xs font-semibold uppercase text-slate-500 mt-4 mb-2 flex items-center gap-2"><i data-lucide="receipt" class="w-3.5 h-3.5"></i> Aquisição & Patrimônio</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+      <div>
+        <label class="text-xs text-slate-500">Código patrimonial</label>
+        <input value="${veic.codigo_patrimonial||''}" disabled class="w-full border border-slate-200 bg-slate-50 rounded-lg px-2 py-1.5 text-sm font-mono mt-1 text-slate-500" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Data de aquisição</label>
+        <input id="ev-data-aq" type="date" value="${veic.data_aquisicao||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Valor de aquisição (R$)</label>
+        <input id="ev-valor-aq" type="number" step="0.01" value="${veic.valor_aquisicao??''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Vida útil (meses)</label>
+        <input id="ev-vida" type="number" value="${veic.vida_util_meses??''}" placeholder="60" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+      <div class="col-span-2">
+        <label class="text-xs text-slate-500">Fornecedor</label>
+        <input id="ev-fornecedor" value="${veic.fornecedor||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">NF nº</label>
+        <input id="ev-nf" value="${veic.nf_numero||''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Valor residual (R$)</label>
+        <input id="ev-residual" type="number" step="0.01" value="${veic.valor_residual??''}" class="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono mt-1" />
+      </div>
+    </div>
+
     <div class="flex gap-2 pt-4 mt-4 border-t">
       <button onclick="abrirDetalhe('${id}')" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
       <button id="btn-salvar-dados" onclick="salvarEdicaoDados('${id}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
@@ -942,8 +1084,9 @@ async function salvarEdicaoDados(id) {
   $('dados-err').classList.add('hidden');
   const val = (el) => el.value === '' ? null : el.value;
   const intVal = (el) => el.value === '' ? null : parseInt(el.value);
+  const floatVal = (el) => el.value === '' ? null : parseFloat(el.value);
   const body = {
-    placa: val($('ev-placa')).toUpperCase().replace(/[-\s]/g,''),
+    placa: (val($('ev-placa'))||'').toUpperCase().replace(/[-\s]/g,'') || null,
     renavam: val($('ev-renavam')),
     chassi: val($('ev-chassi')) ? val($('ev-chassi')).toUpperCase() : null,
     marca: val($('ev-marca')),
@@ -959,7 +1102,14 @@ async function salvarEdicaoDados(id) {
     centro_custo: val($('ev-cc')),
     responsavel_user_id: intVal($('ev-resp-id')),
     responsavel_nome: val($('ev-resp-nome')),
-    status: val($('ev-status')),
+    estado_operacional: val($('ev-estado')),
+    // aquisição & patrimônio
+    data_aquisicao: val($('ev-data-aq')),
+    valor_aquisicao: floatVal($('ev-valor-aq')),
+    fornecedor: val($('ev-fornecedor')),
+    nf_numero: val($('ev-nf')),
+    valor_residual: floatVal($('ev-residual')),
+    vida_util_meses: intVal($('ev-vida')),
   };
   Object.keys(body).forEach(k => { if (body[k] === null || (typeof body[k]==='number' && isNaN(body[k]))) delete body[k]; });
 
@@ -1083,6 +1233,139 @@ async function salvarKm(id) {
   } catch (e) {
     $('mk-erro').textContent = 'Erro: ' + e.message;
     $('mk-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+// ============== Vender / Baixar ==============
+function abrirModalBaixa(id) {
+  abrirModal('Vender / Baixar veículo', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-500">Motivo</label>
+        <select id="mb-motivo" onchange="onMotivoBaixa()" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">
+          <option value="venda">Venda</option>
+          <option value="sucata">Sucata</option>
+          <option value="perda">Perda</option>
+          <option value="roubo">Roubo / furto</option>
+          <option value="fim_vida">Fim de vida útil</option>
+          <option value="outro">Outro</option>
+        </select>
+      </div>
+      <div id="mb-venda-campos" class="space-y-3">
+        <div>
+          <label class="text-xs text-slate-500">Valor da venda (R$)</label>
+          <input id="mb-valor" type="number" step="0.01" placeholder="ex: 160000" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono mt-1" />
+        </div>
+        <div>
+          <label class="text-xs text-slate-500">Comprador</label>
+          <input id="mb-comprador" type="text" placeholder="nome do comprador" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Data</label>
+        <input id="mb-data" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div class="text-[11px] text-slate-500 bg-slate-50 rounded-lg p-2">Na venda, o sistema calcula lucro/prejuízo (valor recebido vs valor contábil depreciado). O veículo sai das listagens ativas mas fica no histórico.</div>
+      <div id="mb-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mb-salvar" onclick="salvarBaixa('${id}')" class="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg text-sm font-medium">Confirmar</button>
+      </div>
+    </div>
+  `);
+  $('mb-data').value = new Date().toISOString().slice(0,10);
+}
+
+function onMotivoBaixa() {
+  const venda = $('mb-motivo').value === 'venda';
+  $('mb-venda-campos').classList.toggle('hidden', !venda);
+}
+
+async function salvarBaixa(id) {
+  const motivo = $('mb-motivo').value;
+  const body = {motivo, data: $('mb-data').value || null};
+  if (motivo === 'venda') {
+    body.valor = parseFloat($('mb-valor').value) || null;
+    body.comprador = $('mb-comprador').value.trim() || null;
+  }
+  const btn = $('mb-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + id + '/baixar', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    const d = await r.json();
+    let msg = motivo === 'venda' ? 'Veículo vendido' : 'Veículo baixado';
+    if (d.resultado_contabil != null) msg += d.resultado_contabil >= 0
+      ? ` — lucro de ${fmtMoeda(d.resultado_contabil)}` : ` — prejuízo de ${fmtMoeda(Math.abs(d.resultado_contabil))}`;
+    toast(msg);
+    fecharModal();
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) {
+    $('mb-erro').textContent = 'Erro: ' + e.message;
+    $('mb-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+// ============== Transferir filial ==============
+function abrirModalTransferir(id, filialAtual) {
+  const opts = FILIAIS.filter(f => f.filial !== filialAtual)
+    .map(f => `<option value="${f.filial}">${f.sigla} — ${f.filial}</option>`).join('');
+  abrirModal('Transferir de filial', `
+    <div class="space-y-3">
+      <div class="text-sm text-slate-600">Filial atual: <strong>${filialAtual}</strong></div>
+      <div>
+        <label class="text-xs text-slate-500">Transferir para</label>
+        <select id="mt-filial" onchange="onTransfFilial()" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">${opts}</select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Centro de custo (na filial destino)</label>
+        <select id="mt-cc" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1"></select>
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Motivo (opcional)</label>
+        <input id="mt-motivo" type="text" placeholder="ex: realocação para o CD" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div id="mt-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mt-salvar" onclick="salvarTransferencia('${id}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Transferir</button>
+      </div>
+    </div>
+  `);
+  onTransfFilial();
+}
+
+function onTransfFilial() {
+  const filial = parseInt($('mt-filial').value);
+  $('mt-cc').innerHTML = '<option value="">(manter atual)</option>' +
+    CENTROS.filter(c => c.filial === filial).map(c => `<option value="${c.codigo}">${c.nome}</option>`).join('');
+}
+
+async function salvarTransferencia(id) {
+  const body = {
+    para_filial: parseInt($('mt-filial').value),
+    centro_custo: $('mt-cc').value || null,
+    motivo: $('mt-motivo').value.trim() || null,
+  };
+  const btn = $('mt-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + id + '/transferir', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    toast('Veículo transferido.');
+    fecharModal();
+    await invalidateApiCache();
+    await abrirDetalhe(id);
+  } catch (e) {
+    $('mt-erro').textContent = 'Erro: ' + e.message;
+    $('mt-erro').classList.remove('hidden');
     btn.disabled = false; btn.classList.remove('opacity-50');
   }
 }
