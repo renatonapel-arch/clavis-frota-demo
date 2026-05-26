@@ -14,6 +14,7 @@ Trocaveis para a fase staging:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -95,6 +96,15 @@ USE_REAL_VISION = bool(ANTHROPIC_API_KEY) and _anthropic_available and \
     os.getenv("USE_REAL_VISION", "true").lower() == "true"
 VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5")
 _vision_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if USE_REAL_VISION else None
+
+# Alertas automáticos de vencimento via WhatsApp (Evolution API)
+EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
+EVOLUTION_API_TOKEN = os.getenv("EVOLUTION_API_TOKEN", "")
+EVOLUTION_INSTANCE = os.getenv("EVOLUTION_INSTANCE", "")
+ALERTA_WHATSAPP = os.getenv("ALERTA_WHATSAPP") or os.getenv("RENATO_WHATSAPP", "")
+ENABLE_ALERTS = os.getenv("ENABLE_ALERTS", "false").lower() == "true"
+ALERTA_HORA = int(os.getenv("ALERTA_HORA", "8"))    # hora BRT do envio diário
+ALERTA_DIAS = int(os.getenv("ALERTA_DIAS", "30"))   # antecedência do aviso
 
 PLACA_MERCOSUL_RE = re.compile(r"^[A-Z]{3}[0-9][A-Z][0-9]{2}$|^[A-Z]{3}[0-9][A-Z][0-9]{3}$")
 PLACA_ANTIGA_RE = re.compile(r"^[A-Z]{3}[0-9]{4}$")
@@ -711,6 +721,152 @@ def calcular_depreciacao(bem: dict) -> Optional[dict]:
     }
 
 
+def add_meses(d: date, m: int) -> date:
+    import calendar
+    total = d.month - 1 + m
+    y = d.year + total // 12
+    mo = total % 12 + 1
+    dia = min(d.day, calendar.monthrange(y, mo)[1])
+    return date(y, mo, dia)
+
+
+_DOC_NOME = {"crlv": "CRLV", "ipva": "IPVA", "seguro": "Seguro", "vistoria": "Vistoria",
+             "troca_oleo": "Troca de óleo"}
+
+
+def coletar_alertas(dias: int = 30) -> list[dict]:
+    """Varre a frota ativa e retorna documentos/troca de óleo vencidos ou
+    vencendo em até `dias`. Ordenado: mais crítico primeiro."""
+    hoje = date.today()
+    conn = db()
+    veics = conn.execute("""
+        SELECT b.cod_interno AS bem_id, b.codigo_patrimonial, b.filial,
+               v.placa, v.marca, v.modelo, v.intervalo_meses, v.data_ultima_troca,
+               v.margem_dias_aviso
+        FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno
+        WHERE b.deleted_at IS NULL
+    """).fetchall()
+    docs = conn.execute(
+        "SELECT bem_id, tipo, vencimento FROM documentos WHERE ativo = 1 AND vencimento IS NOT NULL"
+    ).fetchall()
+    conn.close()
+
+    docs_by = {}
+    for d in docs:
+        docs_by.setdefault(d["bem_id"], []).append(d)
+
+    alertas = []
+    for vr in veics:
+        v = dict(vr)
+        ident = v["placa"] or v["codigo_patrimonial"] or v["bem_id"][:6]
+        nome = (f"{v.get('marca') or ''} {v.get('modelo') or ''}").strip()
+        for d in docs_by.get(v["bem_id"], []):
+            try:
+                venc = date.fromisoformat(d["vencimento"])
+            except Exception:
+                continue
+            dd = (venc - hoje).days
+            if dd <= dias:
+                alertas.append({
+                    "bem_id": v["bem_id"], "ident": ident, "nome": nome, "filial": v["filial"],
+                    "codigo_patrimonial": v["codigo_patrimonial"], "tipo": d["tipo"],
+                    "vencimento": d["vencimento"], "dias": dd,
+                    "categoria": "vencido" if dd < 0 else "vencendo",
+                })
+        # troca de óleo (por tempo)
+        if v.get("data_ultima_troca") and v.get("intervalo_meses"):
+            try:
+                ult = date.fromisoformat(v["data_ultima_troca"])
+                prox = add_meses(ult, int(v["intervalo_meses"]))
+                dd = (prox - hoje).days
+                margem = v.get("margem_dias_aviso") or 15
+                if dd <= margem:
+                    alertas.append({
+                        "bem_id": v["bem_id"], "ident": ident, "nome": nome, "filial": v["filial"],
+                        "codigo_patrimonial": v["codigo_patrimonial"], "tipo": "troca_oleo",
+                        "vencimento": prox.isoformat(), "dias": dd,
+                        "categoria": "vencido" if dd < 0 else "vencendo",
+                    })
+            except Exception:
+                pass
+    alertas.sort(key=lambda a: a["dias"])
+    return alertas
+
+
+def montar_digest_texto(alertas: list[dict]) -> str:
+    vencidos = [a for a in alertas if a["categoria"] == "vencido"]
+    vencendo = [a for a in alertas if a["categoria"] == "vencendo"]
+
+    def linha(a):
+        nome = f"{a['ident']}" + (f" {a['nome']}" if a["nome"] else "")
+        doc = _DOC_NOME.get(a["tipo"], a["tipo"])
+        if a["dias"] < 0:
+            quando = f"venceu há {-a['dias']}d"
+        elif a["dias"] == 0:
+            quando = "vence hoje"
+        else:
+            quando = f"vence em {a['dias']}d"
+        return f"• {nome} — {doc} {quando} (filial {a['filial']})"
+
+    partes = ["🚗 *Frota Napel — vencimentos*", ""]
+    if vencidos:
+        partes.append(f"🔴 *VENCIDOS ({len(vencidos)})*")
+        partes += [linha(a) for a in vencidos]
+        partes.append("")
+    if vencendo:
+        partes.append(f"🟡 *VENCE EM ATÉ {ALERTA_DIAS} DIAS ({len(vencendo)})*")
+        partes += [linha(a) for a in vencendo]
+    partes.append("")
+    partes.append("Acesse: https://frota.demos.napel.com.br")
+    return "\n".join(partes)
+
+
+def enviar_whatsapp(numero: str, texto: str) -> int:
+    import urllib.request
+    body = json.dumps({"number": numero, "text": texto}).encode()
+    req = urllib.request.Request(
+        f"{EVOLUTION_API_URL}/message/sendText/{EVOLUTION_INSTANCE}",
+        data=body, method="POST",
+        headers={"apikey": EVOLUTION_API_TOKEN, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.status
+
+
+def enviar_digest_alertas() -> dict:
+    if not (EVOLUTION_API_URL and ALERTA_WHATSAPP):
+        return {"enviado": False, "motivo": "Evolution não configurado"}
+    alertas = coletar_alertas(ALERTA_DIAS)
+    if not alertas:
+        print(f"[alertas {now_brt_display()}] nada a notificar")
+        return {"enviado": False, "motivo": "sem alertas"}
+    texto = montar_digest_texto(alertas)
+    try:
+        status = enviar_whatsapp(ALERTA_WHATSAPP, texto)
+        print(f"[alertas {now_brt_display()}] digest enviado ({len(alertas)} itens) http={status}")
+        return {"enviado": True, "qtd": len(alertas), "http": status}
+    except Exception as e:
+        print(f"[alertas] falha no envio: {e}")
+        return {"enviado": False, "motivo": str(e)}
+
+
+async def _alert_loop():
+    """Loop diário: dorme até ALERTA_HORA BRT e envia o digest."""
+    while True:
+        agora = datetime.now(TZ_BRT)
+        alvo = agora.replace(hour=ALERTA_HORA, minute=0, second=0, microsecond=0)
+        if alvo <= agora:
+            alvo = alvo + timedelta(days=1)
+        espera = (alvo - agora).total_seconds()
+        try:
+            await asyncio.sleep(espera)
+            enviar_digest_alertas()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[alertas] loop erro: {e}")
+            await asyncio.sleep(3600)
+
+
 def status_documento(vencimento: Optional[str]) -> tuple[str, Optional[int]]:
     """Retorna (status, dias_para_vencer) de um documento pela data de vencimento."""
     if not vencimento:
@@ -731,7 +887,13 @@ def status_documento(vencimento: Optional[str]) -> tuple[str, Optional[int]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    alert_task = None
+    if ENABLE_ALERTS and EVOLUTION_API_URL and ALERTA_WHATSAPP:
+        alert_task = asyncio.create_task(_alert_loop())
+        print(f"[alertas] agendado: diário {ALERTA_HORA}:00 BRT -> {ALERTA_WHATSAPP[:6]}***")
     yield
+    if alert_task:
+        alert_task.cancel()
 
 
 # ---------- API ----------
@@ -748,8 +910,36 @@ def health():
             "fixtures": "ok" if FIXTURES_PATH.exists() else "fail",
             "claude_vision": "real" if USE_REAL_VISION else "mock",
             "vision_model": VISION_MODEL if USE_REAL_VISION else "—",
+            "alertas_whatsapp": "on" if (ENABLE_ALERTS and EVOLUTION_API_URL and ALERTA_WHATSAPP) else "off",
         },
     }
+
+
+@app.get("/api/patrimonio/alertas")
+def listar_alertas(dias: int = 30, authorization: Optional[str] = Header(None)):
+    """Agenda de vencimentos da frota (CRLV/IPVA/seguro/vistoria/troca de óleo)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    alertas = coletar_alertas(dias)
+    return {
+        "alertas": alertas,
+        "resumo": {
+            "total": len(alertas),
+            "vencidos": sum(1 for a in alertas if a["categoria"] == "vencido"),
+            "vencendo": sum(1 for a in alertas if a["categoria"] == "vencendo"),
+        },
+        "whatsapp_ativo": bool(ENABLE_ALERTS and EVOLUTION_API_URL and ALERTA_WHATSAPP),
+    }
+
+
+@app.post("/api/patrimonio/alertas/enviar")
+def enviar_alertas_agora(authorization: Optional[str] = Header(None)):
+    """Dispara o digest de vencimentos no WhatsApp agora (teste/manual)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:admin")
+    if not (EVOLUTION_API_URL and ALERTA_WHATSAPP):
+        raise HTTPException(422, "WhatsApp não configurado (faltam EVOLUTION_API_URL / número).")
+    return enviar_digest_alertas()
 
 
 @app.post("/api/auth/login")

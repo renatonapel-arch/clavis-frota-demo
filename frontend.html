@@ -68,8 +68,12 @@
     </div>
     <nav class="flex-1 overflow-y-auto p-3 text-sm scrollbar-thin">
       <div class="text-[11px] uppercase text-slate-400 font-semibold px-2 mt-1 mb-1">Patrimônio</div>
-      <a onclick="showView('listagem')" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
+      <a id="nav-listagem" onclick="showView('listagem')" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
         <i data-lucide="truck" class="w-4 h-4"></i> Veículos
+      </a>
+      <a id="nav-alertas" onclick="abrirAlertas()" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 text-slate-700">
+        <i data-lucide="bell" class="w-4 h-4"></i> <span>Vencimentos</span>
+        <span id="nav-alertas-badge" class="hidden ml-auto text-[10px] font-bold bg-red-600 text-white rounded-full px-1.5 py-0.5 leading-none"></span>
       </a>
       <a id="nav-usuarios" onclick="abrirUsuarios()" class="hidden cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 text-slate-700">
         <i data-lucide="users" class="w-4 h-4"></i> Usuários
@@ -188,6 +192,29 @@
         </button>
       </div>
       <div id="usuarios-content"></div>
+    </section>
+
+    <!-- ===== ALERTAS / VENCIMENTOS ===== -->
+    <section id="view-alertas" class="p-4 lg:p-8 hidden">
+      <div class="flex items-center justify-between gap-4 mb-2 flex-wrap">
+        <div>
+          <h2 class="text-xl font-bold text-slate-900">Vencimentos da frota</h2>
+          <p class="text-sm text-slate-500">CRLV, IPVA, seguro, vistoria e troca de óleo vencidos ou prestes a vencer.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <select id="al-dias" onchange="abrirAlertas()" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+            <option value="30">próximos 30 dias</option>
+            <option value="60">próximos 60 dias</option>
+            <option value="90">próximos 90 dias</option>
+            <option value="365">próximo ano</option>
+          </select>
+          <button id="al-enviar" onclick="enviarAlertasAgora()" class="hidden bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+            <i data-lucide="send" class="w-4 h-4"></i> Enviar agora no WhatsApp
+          </button>
+        </div>
+      </div>
+      <div id="al-wpp-status" class="hidden text-xs mb-4"></div>
+      <div id="alertas-content"><div class="animate-pulse text-slate-500">Carregando…</div></div>
     </section>
 
     <!-- ===== UPLOAD ===== -->
@@ -549,6 +576,7 @@ async function iniciar() {
     console.error(e);
   }
   reload();
+  carregarBadgeAlertas();
   lucide.createIcons();
 }
 
@@ -566,9 +594,25 @@ function showView(v) {
   $('view-upload').classList.toggle('hidden', v !== 'upload');
   $('view-detalhe').classList.toggle('hidden', v !== 'detalhe');
   $('view-usuarios').classList.toggle('hidden', v !== 'usuarios');
+  $('view-alertas').classList.toggle('hidden', v !== 'alertas');
+  marcarNav(v);
   if (v === 'listagem') reload();
   if (v === 'upload') resetUpload();
   lucide.createIcons();
+}
+
+// realça o item de menu ativo
+function marcarNav(v) {
+  const ativo = 'bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5';
+  const inativo = 'hover:bg-slate-50 text-slate-700';
+  const map = { listagem: 'nav-listagem', upload: 'nav-listagem', detalhe: 'nav-listagem',
+                alertas: 'nav-alertas', usuarios: 'nav-usuarios' };
+  ['nav-listagem', 'nav-alertas', 'nav-usuarios'].forEach(id => {
+    const el = $(id); if (!el) return;
+    ativo.split(' ').forEach(c => el.classList.remove(c));
+    inativo.split(' ').forEach(c => el.classList.remove(c));
+    (id === map[v] ? ativo : inativo).split(' ').forEach(c => el.classList.add(c));
+  });
 }
 
 async function reload() {
@@ -1524,6 +1568,113 @@ async function salvarTransferencia(id) {
   } catch (e) {
     $('mt-erro').textContent = 'Erro: ' + e.message;
     $('mt-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+// ============== Alertas / vencimentos ==============
+const AL_LABEL = {crlv:'CRLV', ipva:'IPVA', seguro:'Seguro', vistoria:'Vistoria', troca_oleo:'Troca de óleo'};
+const AL_ICON  = {crlv:'file-text', ipva:'receipt', seguro:'shield', vistoria:'clipboard-check', troca_oleo:'droplet'};
+
+function alPrazo(dias) {
+  if (dias < 0)  return {txt:`venceu há ${-dias} dia${dias===-1?'':'s'}`, cls:'text-red-700'};
+  if (dias === 0) return {txt:'vence hoje', cls:'text-red-700'};
+  if (dias <= 7)  return {txt:`vence em ${dias} dia${dias===1?'':'s'}`, cls:'text-amber-700'};
+  return {txt:`vence em ${dias} dias`, cls:'text-slate-600'};
+}
+
+function alLinha(a) {
+  const p = alPrazo(a.dias);
+  const ident = a.ident + (a.nome ? ` · ${a.nome}` : '');
+  return `
+    <div class="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${a.bem_id}')">
+      <i data-lucide="${AL_ICON[a.tipo]||'alert-circle'}" class="w-4 h-4 text-slate-400 shrink-0"></i>
+      <div class="min-w-0 flex-1">
+        <div class="font-medium text-slate-800 truncate">${ident}</div>
+        <div class="text-xs text-slate-500">${AL_LABEL[a.tipo]||a.tipo} · vence ${fmtDate(a.vencimento)} · filial ${a.filial}</div>
+      </div>
+      <div class="text-xs font-medium ${p.cls} shrink-0 text-right">${p.txt}</div>
+    </div>`;
+}
+
+async function abrirAlertas() {
+  showView('alertas');
+  const dias = $('al-dias') ? $('al-dias').value : 30;
+  $('alertas-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
+  try {
+    const data = await api('/api/patrimonio/alertas?dias=' + dias);
+    const alertas = data.alertas || [];
+    const vencidos = alertas.filter(a => a.categoria === 'vencido');
+    const vencendo = alertas.filter(a => a.categoria === 'vencendo');
+
+    // badge no menu = total de vencidos
+    atualizarBadgeAlertas(data.resumo.vencidos);
+
+    // botão "enviar agora" só admin
+    const isAdmin = USER && (USER.roles || []).includes('patrimonio:admin');
+    $('al-enviar').classList.toggle('hidden', !(isAdmin && data.whatsapp_ativo));
+    const ws = $('al-wpp-status');
+    if (isAdmin) {
+      ws.classList.remove('hidden');
+      ws.innerHTML = data.whatsapp_ativo
+        ? '<span class="text-emerald-600">● Avisos automáticos no WhatsApp ativos (envio diário).</span>'
+        : '<span class="text-slate-400">○ Avisos automáticos no WhatsApp desligados.</span>';
+    } else { ws.classList.add('hidden'); }
+
+    if (!alertas.length) {
+      $('alertas-content').innerHTML = `
+        <div class="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-500">
+          <i data-lucide="check-circle-2" class="w-8 h-8 mx-auto mb-2 text-emerald-500"></i>
+          Nada vencendo nesse período. Frota em dia.
+        </div>`;
+      lucide.createIcons(); return;
+    }
+
+    const bloco = (titulo, cor, itens) => itens.length ? `
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden mb-5">
+        <div class="px-4 py-2.5 text-xs font-semibold uppercase ${cor} flex items-center gap-2">
+          ${titulo} <span class="font-bold">(${itens.length})</span>
+        </div>
+        <div class="divide-y divide-slate-100">${itens.map(alLinha).join('')}</div>
+      </div>` : '';
+
+    $('alertas-content').innerHTML =
+      bloco('🔴 Vencidos', 'bg-red-50 text-red-700', vencidos) +
+      bloco(`🟡 Vence em até ${dias} dias`, 'bg-amber-50 text-amber-700', vencendo);
+    lucide.createIcons();
+  } catch (e) {
+    $('alertas-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`;
+  }
+}
+
+function atualizarBadgeAlertas(qtd) {
+  const b = $('nav-alertas-badge');
+  if (!b) return;
+  if (qtd > 0) { b.textContent = qtd; b.classList.remove('hidden'); }
+  else { b.classList.add('hidden'); }
+}
+
+// carrega só o resumo (sem trocar de tela) — usado no boot pra acender o badge
+async function carregarBadgeAlertas() {
+  try {
+    const data = await api('/api/patrimonio/alertas?dias=30');
+    atualizarBadgeAlertas(data.resumo.vencidos);
+  } catch (e) {}
+}
+
+async function enviarAlertasAgora() {
+  const btn = $('al-enviar');
+  btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const r = await fetch(API + '/api/patrimonio/alertas/enviar', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN},
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || ('HTTP ' + r.status));
+    toast(j.enviado ? `Enviado no WhatsApp (${j.qtd} itens).` : ('Não enviado: ' + (j.motivo || 'sem alertas')));
+  } catch (e) {
+    toast('Erro ao enviar: ' + e.message);
+  } finally {
     btn.disabled = false; btn.classList.remove('opacity-50');
   }
 }
