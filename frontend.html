@@ -69,7 +69,7 @@
     <nav class="flex-1 overflow-y-auto p-3 text-sm scrollbar-thin">
       <div class="text-[11px] uppercase text-slate-400 font-semibold px-2 mt-1 mb-1">Patrimônio</div>
       <a id="nav-listagem" onclick="showView('listagem')" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5">
-        <i data-lucide="truck" class="w-4 h-4"></i> Veículos
+        <i data-lucide="package" class="w-4 h-4"></i> Bens
       </a>
       <a id="nav-alertas" onclick="abrirAlertas()" class="cursor-pointer flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-50 text-slate-700">
         <i data-lucide="bell" class="w-4 h-4"></i> <span>Vencimentos</span>
@@ -89,17 +89,18 @@
 
   <main class="flex-1 overflow-y-auto">
     <header class="bg-white border-b border-slate-200 px-4 lg:px-8 py-4">
-      <div class="text-xs text-slate-500 mb-1">Patrimônio › Veículos</div>
+      <div class="text-xs text-slate-500 mb-1">Patrimônio › Bens</div>
       <div class="flex items-center justify-between gap-4">
-        <h1 class="text-xl lg:text-2xl font-bold text-slate-900">Cadastro Veicular</h1>
-        <button onclick="showView('upload')" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2">
-          <i data-lucide="upload" class="w-4 h-4"></i><span class="hidden sm:inline">Novo via CRLV</span><span class="sm:hidden">Novo</span>
+        <h1 class="text-xl lg:text-2xl font-bold text-slate-900">Controle Patrimonial</h1>
+        <button onclick="abrirEscolhaCategoria()" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2">
+          <i data-lucide="plus" class="w-4 h-4"></i><span class="hidden sm:inline">Novo bem</span><span class="sm:hidden">Novo</span>
         </button>
       </div>
     </header>
 
     <!-- ===== LISTAGEM ===== -->
     <section id="view-listagem" class="p-4 lg:p-8">
+      <div id="cat-tabs" class="flex flex-wrap gap-1 mb-5 border-b border-slate-200"></div>
       <div id="kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6"></div>
 
       <div class="bg-white rounded-xl border border-slate-200 p-3 mb-4 flex flex-wrap gap-2 items-center">
@@ -146,6 +147,7 @@
         </div>
       </div>
 
+      <div id="lista-veiculo">
       <div id="tabela-wrap" class="hidden md:block bg-white rounded-xl border border-slate-200 overflow-hidden">
         <table class="w-full text-sm">
           <thead class="bg-slate-50 text-xs uppercase text-slate-500">
@@ -164,6 +166,28 @@
         </table>
       </div>
       <div id="cards" class="md:hidden grid grid-cols-1 gap-3"></div>
+      </div><!-- /lista-veiculo -->
+
+      <!-- lista genérica: categorias não-veículo e aba "Todos" -->
+      <div id="lista-bens" class="hidden">
+      <div class="hidden md:block bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-xs uppercase text-slate-500">
+            <tr>
+              <th class="text-left px-4 py-3">Código</th>
+              <th class="text-left px-4 py-3">Categoria</th>
+              <th class="text-left px-4 py-3">Descrição</th>
+              <th class="text-left px-4 py-3">Filial</th>
+              <th class="text-left px-4 py-3">Estado</th>
+              <th class="text-right px-4 py-3">Valor</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-bens" class="divide-y divide-slate-100"></tbody>
+        </table>
+      </div>
+      <div id="cards-bens" class="md:hidden grid grid-cols-1 gap-3"></div>
+      </div><!-- /lista-bens -->
+
       <div id="paginacao"></div>
       <div id="empty" class="hidden bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center">
         <i data-lucide="truck" class="w-12 h-12 mx-auto text-slate-300 mb-3"></i>
@@ -391,6 +415,14 @@
         </div>
       </div>
     </section>
+
+    <!-- ===== CADASTRO DE BEM NÃO-VEÍCULO (máquina/TI/móveis/imóvel) ===== -->
+    <section id="view-bem" class="p-4 lg:p-8 hidden">
+      <button onclick="showView('listagem')" class="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-4">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i> voltar
+      </button>
+      <div id="bem-form-content"></div>
+    </section>
   </main>
 </div>
 
@@ -426,6 +458,17 @@ let PAGINA = 1;
 const POR_PAGINA = 20;
 let FILIAIS = [];
 let CENTROS = [];
+let CATEGORIA_ATIVA = 'veiculo';     // aba ativa na listagem (veículo é o padrão)
+let POR_CATEGORIA = {};              // contagem por categoria (alimenta as abas)
+const CATEGORIAS_META = [
+  {id:'',           label:'Todos',       icon:'layers'},
+  {id:'veiculo',    label:'Veículos',    icon:'truck'},
+  {id:'maquina',    label:'Máquinas',    icon:'cog'},
+  {id:'informatica',label:'Informática', icon:'monitor'},
+  {id:'moveis',     label:'Móveis',      icon:'armchair'},
+  {id:'imovel',     label:'Imóveis',     icon:'building-2'},
+];
+const CAT_LABEL_JS = {veiculo:'Veículo', maquina:'Máquina/Equip.', informatica:'Informática', moveis:'Móveis', imovel:'Imóvel'};
 
 function $(id) { return document.getElementById(id); }
 
@@ -615,6 +658,7 @@ function refreshCentroCusto() {
 function showView(v) {
   $('view-listagem').classList.toggle('hidden', v !== 'listagem');
   $('view-upload').classList.toggle('hidden', v !== 'upload');
+  $('view-bem').classList.toggle('hidden', v !== 'bem');
   $('view-detalhe').classList.toggle('hidden', v !== 'detalhe');
   $('view-usuarios').classList.toggle('hidden', v !== 'usuarios');
   $('view-alertas').classList.toggle('hidden', v !== 'alertas');
@@ -628,8 +672,8 @@ function showView(v) {
 function marcarNav(v) {
   const ativo = 'bg-violet-50 text-violet-700 font-medium border-l-2 border-violet-600 -ml-0.5 pl-2.5';
   const inativo = 'hover:bg-slate-50 text-slate-700';
-  const map = { listagem: 'nav-listagem', upload: 'nav-listagem', detalhe: 'nav-listagem',
-                alertas: 'nav-alertas', usuarios: 'nav-usuarios' };
+  const map = { listagem: 'nav-listagem', upload: 'nav-listagem', bem: 'nav-listagem',
+                detalhe: 'nav-listagem', alertas: 'nav-alertas', usuarios: 'nav-usuarios' };
   ['nav-listagem', 'nav-alertas', 'nav-usuarios'].forEach(id => {
     const el = $(id); if (!el) return;
     ativo.split(' ').forEach(c => el.classList.remove(c));
@@ -640,48 +684,79 @@ function marcarNav(v) {
 
 async function reload() {
   const params = new URLSearchParams();
+  if (CATEGORIA_ATIVA) params.set('categoria', CATEGORIA_ATIVA);
   if ($('f-filial').value) params.set('filial', $('f-filial').value);
   if ($('f-status').value) params.set('status', $('f-status').value);
   if ($('f-busca').value.trim()) params.set('busca', $('f-busca').value.trim());
 
   // skeleton enquanto carrega
   $('skeleton').classList.remove('hidden');
-  $('tabela-wrap').classList.add('hidden');
-  $('cards').classList.add('hidden');
-  $('empty').classList.add('hidden');
+  ['lista-veiculo', 'lista-bens', 'empty'].forEach(id => $(id).classList.add('hidden'));
 
   try {
-    // chama o endpoint fleet pra ter campos de manutenção
-    const fleet = await api('/api/v1/fleet/vehicles?' + params);
-    const veiculos = fleet.vehicles || [];
-    // KPIs derivados localmente
-    const hoje = new Date();
-    const ativos = veiculos.filter(v => v.ativo).length;
-    const vencendo = veiculos.filter(v => alertaVencimento(v.vencimento_crlv)).length;
-    const vencidos = veiculos.filter(v => {
-      const d = new Date(v.vencimento_crlv);
-      return d < hoje;
-    }).length;
-    const trocaPendente = veiculos.filter(v => {
-      // só conta como pendente se o veículo está no programa (tem config) e está vencendo/vencido
-      if (!v.data_ultima_troca || v.intervalo_meses == null) return false;
-      const ultima = new Date(v.data_ultima_troca);
-      const proxMes = new Date(ultima); proxMes.setMonth(proxMes.getMonth() + v.intervalo_meses);
-      const dias = (proxMes - hoje) / 86400000;
-      return dias <= (v.margem_dias_aviso ?? 15);
-    }).length;
+    // listagem unificada (todas as categorias). Veículo traz os campos de manutenção.
+    const resp = await api('/api/patrimonio/bens?' + params);
+    const bens = resp.bens || [];
+    POR_CATEGORIA = resp.por_categoria || {};
+    renderCatTabs();
 
-    renderKPIs({total: veiculos.length, ativos, vencendo_30d: vencendo, vencidos, troca_pendente: trocaPendente});
-    LISTA = veiculos;
+    if (CATEGORIA_ATIVA === 'veiculo') {
+      // KPIs de veículo — idêntico ao comportamento anterior
+      const hoje = new Date();
+      const ativos = bens.filter(v => v.ativo).length;
+      const vencendo = bens.filter(v => alertaVencimento(v.vencimento_crlv)).length;
+      const trocaPendente = bens.filter(v => {
+        if (!v.data_ultima_troca || v.intervalo_meses == null) return false;
+        const ultima = new Date(v.data_ultima_troca);
+        const proxMes = new Date(ultima); proxMes.setMonth(proxMes.getMonth() + v.intervalo_meses);
+        const dias = (proxMes - hoje) / 86400000;
+        return dias <= (v.margem_dias_aviso ?? 15);
+      }).length;
+      renderKPIs({total: bens.length, ativos, vencendo_30d: vencendo, troca_pendente: trocaPendente});
+    } else {
+      renderKPIsGenerico(resp.kpis || {});
+    }
+    LISTA = bens;
     PAGINA = 1;
     aplicarOrdemEPagina();
   } catch (e) {
     console.error(e);
   } finally {
     $('skeleton').classList.add('hidden');
-    $('tabela-wrap').classList.remove('hidden');
-    $('cards').classList.remove('hidden');
   }
+}
+
+// Abas de categoria (com contagem). Veículos é o padrão.
+function renderCatTabs() {
+  const el = $('cat-tabs');
+  if (!el) return;
+  el.innerHTML = CATEGORIAS_META.map(c => {
+    const ativo = (CATEGORIA_ATIVA === c.id);
+    const n = c.id === '' ? Object.values(POR_CATEGORIA).reduce((a, b) => a + b, 0) : (POR_CATEGORIA[c.id] || 0);
+    const cls = ativo
+      ? 'border-violet-600 text-violet-700 font-semibold'
+      : 'border-transparent text-slate-500 hover:text-slate-700';
+    return `<button onclick="trocarCategoria('${c.id}')" class="flex items-center gap-1.5 px-3 py-2 -mb-px border-b-2 ${cls}">
+        <i data-lucide="${c.icon}" class="w-4 h-4"></i> ${c.label}
+        <span class="text-[11px] ${ativo ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-500'} rounded-full px-1.5">${n}</span>
+      </button>`;
+  }).join('');
+  lucide.createIcons();
+}
+
+function trocarCategoria(cat) {
+  CATEGORIA_ATIVA = cat;
+  SORT_COL = null; SORT_DIR = 1; PAGINA = 1;
+  reload();
+}
+
+function renderKPIsGenerico(k) {
+  $('kpis').innerHTML = `
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Total de bens</div><div class="text-2xl font-bold text-slate-900 mt-1">${k.total || 0}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Ativos</div><div class="text-2xl font-bold text-emerald-600 mt-1">${k.ativos || 0}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Valor total</div><div class="text-2xl font-bold text-slate-900 mt-1">${fmtMoeda(k.valor_total || 0)}</div></div>
+    <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Em manutenção</div><div class="text-2xl font-bold text-amber-600 mt-1">${k.em_manutencao || 0}</div></div>
+  `;
 }
 
 function ordenarPor(col) {
@@ -782,20 +857,24 @@ function alertaVencimento(crlv) {
 }
 
 function renderRows(rows) {
-  const tbody = $('tbody'), cards = $('cards'), empty = $('empty');
+  const ehVeiculo = (CATEGORIA_ATIVA === 'veiculo');
+  $('lista-veiculo').classList.toggle('hidden', !ehVeiculo);
+  $('lista-bens').classList.toggle('hidden', ehVeiculo);
+  const empty = $('empty');
   if (rows.length === 0) {
     empty.classList.remove('hidden');
-    tbody.innerHTML = '';
-    cards.innerHTML = '';
+    ['tbody', 'cards', 'tbody-bens', 'cards-bens'].forEach(id => { $(id).innerHTML = ''; });
     lucide.createIcons();
     return;
   }
   empty.classList.add('hidden');
+  if (!ehVeiculo) { renderRowsBens(rows); lucide.createIcons(); return; }
+  const tbody = $('tbody'), cards = $('cards');
   tbody.innerHTML = rows.map(v => {
     const oleo = statusTrocaOleo(v);
     const statusCls = v.ativo ? 'status-ativo' : 'status-baixado';
     return `
-    <tr class="hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
+    <tr class="hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${v.id}','veiculo')">
       <td class="px-4 py-3 font-mono text-xs text-violet-700">${v.codigo_patrimonial || '—'}</td>
       <td class="px-4 py-3 font-mono font-semibold">${v.placa || '<span class="text-slate-400 not-italic font-sans">— equipamento</span>'}</td>
       <td class="px-4 py-3">${v.marca||''} ${v.modelo||''}</td>
@@ -809,7 +888,7 @@ function renderRows(rows) {
   cards.innerHTML = rows.map(v => {
     const oleo = statusTrocaOleo(v);
     return `
-    <div class="bg-white rounded-xl border border-slate-200 p-4 cursor-pointer" onclick="abrirDetalhe('${v.id}')">
+    <div class="bg-white rounded-xl border border-slate-200 p-4 cursor-pointer" onclick="abrirDetalhe('${v.id}','veiculo')">
       <div class="flex items-start justify-between mb-2">
         <div>
           <div class="text-[10px] font-mono text-violet-700">${v.codigo_patrimonial||''}</div>
@@ -827,6 +906,44 @@ function renderRows(rows) {
     </div>`;
   }).join('');
   lucide.createIcons();
+}
+
+// ===== Render genérico (categorias não-veículo / aba Todos) =====
+function catBadge(cat) {
+  const map = {
+    veiculo: ['Veículo', 'bg-blue-100 text-blue-700'],
+    maquina: ['Máquina', 'bg-orange-100 text-orange-700'],
+    informatica: ['Informática', 'bg-cyan-100 text-cyan-700'],
+    moveis: ['Móveis', 'bg-teal-100 text-teal-700'],
+    imovel: ['Imóvel', 'bg-purple-100 text-purple-700'],
+  };
+  const [label, cls] = map[cat] || [cat, 'bg-slate-100 text-slate-600'];
+  return `<span class="text-[11px] px-2 py-0.5 rounded-full font-medium ${cls}">${label}</span>`;
+}
+
+function renderRowsBens(rows) {
+  $('tbody-bens').innerHTML = rows.map(b => `
+    <tr class="hover:bg-slate-50 cursor-pointer" onclick="abrirDetalhe('${b.id}','${b.categoria}')">
+      <td class="px-4 py-3 font-mono text-xs text-violet-700">${b.codigo_patrimonial || '—'}</td>
+      <td class="px-4 py-3">${catBadge(b.categoria)}</td>
+      <td class="px-4 py-3 font-medium">${b.nome_exibicao || '—'}</td>
+      <td class="px-4 py-3 text-slate-600">${b.filial}</td>
+      <td class="px-4 py-3">${badgeEstado(b.estado_operacional)}</td>
+      <td class="px-4 py-3 text-right font-mono text-slate-700">${b.valor_aquisicao != null ? fmtMoeda(b.valor_aquisicao) : '—'}</td>
+    </tr>`).join('');
+  $('cards-bens').innerHTML = rows.map(b => `
+    <div class="bg-white rounded-xl border border-slate-200 p-4 cursor-pointer" onclick="abrirDetalhe('${b.id}','${b.categoria}')">
+      <div class="flex items-start justify-between mb-1">
+        <div class="text-[10px] font-mono text-violet-700">${b.codigo_patrimonial || ''}</div>
+        ${catBadge(b.categoria)}
+      </div>
+      <div class="font-semibold">${b.nome_exibicao || '—'}</div>
+      <div class="text-xs text-slate-500 grid grid-cols-2 gap-1 mt-2">
+        <div>Filial: <span class="text-slate-700">${b.filial}</span></div>
+        <div>Valor: <span class="text-slate-700 font-mono">${b.valor_aquisicao != null ? fmtMoeda(b.valor_aquisicao) : '—'}</span></div>
+        <div class="col-span-2 mt-1">${badgeEstado(b.estado_operacional)}</div>
+      </div>
+    </div>`).join('');
 }
 
 const DOC_LABELS = {crlv: 'CRLV', ipva: 'IPVA', seguro: 'Seguro', vistoria: 'Vistoria'};
@@ -883,7 +1000,17 @@ function renderDocRow(bemId, doc) {
     </div>`;
 }
 
-async function abrirDetalhe(id) {
+// Dispatcher de detalhe: veículo mantém a tela rica de sempre; demais categorias
+// usam a tela genérica. Se a categoria não veio do clique, descobre via /bens/{id}.
+async function abrirDetalhe(id, categoria) {
+  if (!categoria) {
+    try { categoria = (await api('/api/patrimonio/bens/' + id)).categoria; } catch (e) {}
+  }
+  if (categoria && categoria !== 'veiculo') return abrirDetalheBem(id);
+  return abrirDetalheVeiculo(id);
+}
+
+async function abrirDetalheVeiculo(id) {
   showView('detalhe');
   $('detalhe-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
   try {
@@ -2133,6 +2260,417 @@ async function salvarVeiculo() {
     $('btn-salvar').disabled = false;
     $('btn-salvar').classList.remove('opacity-50');
   }
+}
+
+// ============================================================
+// Bens NÃO-veículo (máquina / informática / móveis / imóvel)
+// ============================================================
+let BEM_CAT = null;
+const MP_LABELS = {eletrica:'Elétrica', hidraulica:'Hidráulica', ar_condicionado:'Ar-condicionado',
+                   dedetizacao:'Dedetização', alvara_bombeiros:'Alvará/Bombeiros', outro:'Outro'};
+const ATTR_LABELS = {numero_serie:'Nº de série', fabricante:'Fabricante', horimetro:'Horímetro (h)',
+  garantia_ate:'Garantia até', posse:'Em posse de', licenca_software:'Licença de software',
+  localizacao:'Localização', tipo_imovel:'Tipo', matricula:'Matrícula', area_m2:'Área',
+  inscricao_iptu:'Inscrição IPTU', endereco:'Endereço', locador:'Locador', valor_aluguel:'Aluguel',
+  vigencia_inicio:'Vigência início', vigencia_fim:'Vigência fim', indice_reajuste:'Índice de reajuste',
+  dia_vencimento:'Dia do vencimento'};
+
+function _esc(s){ return String(s).replace(/"/g,'&quot;'); }
+function fld(id, label, type, val){
+  type = type || 'text';
+  const value = (val!=null && val!=='') ? `value="${_esc(val)}"` : '';
+  const step = type==='number' ? 'step="any"' : '';
+  return `<div class="mb-3"><label class="text-xs text-slate-500">${label}</label>
+    <input id="${id}" type="${type}" ${step} ${value} class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>`;
+}
+function grid2(){ return `<div class="grid grid-cols-2 gap-2">${[...arguments].join('')}</div>`; }
+
+// Campos de atributos por categoria (reusados no cadastro e na edição)
+function atributosFieldsHtml(cat, a){
+  a = a || {};
+  if (cat === 'maquina') return grid2(
+    fld('a-numero_serie','Nº de série','text',a.numero_serie), fld('a-fabricante','Fabricante','text',a.fabricante),
+    fld('a-horimetro','Horímetro (h)','number',a.horimetro), fld('a-garantia_ate','Garantia até','date',a.garantia_ate));
+  if (cat === 'informatica') return grid2(
+    fld('a-numero_serie','Nº de série','text',a.numero_serie), fld('a-fabricante','Fabricante','text',a.fabricante),
+    fld('a-garantia_ate','Garantia até','date',a.garantia_ate), fld('a-posse','Em posse de','text',a.posse))
+    + fld('a-licenca_software','Licença de software','text',a.licenca_software);
+  if (cat === 'moveis') return fld('a-localizacao','Localização (sala/setor)','text',a.localizacao);
+  if (cat === 'imovel'){
+    const tip = a.tipo_imovel || 'proprio';
+    return `
+      <div class="mb-3"><label class="text-xs text-slate-500">Tipo de imóvel</label>
+        <div class="flex gap-4 mt-1 text-sm">
+          <label class="flex items-center gap-1"><input type="radio" name="tipo_imovel" value="proprio" ${tip!=='alugado'?'checked':''} onchange="onTipoImovel()"> Próprio (imobilizado)</label>
+          <label class="flex items-center gap-1"><input type="radio" name="tipo_imovel" value="alugado" ${tip==='alugado'?'checked':''} onchange="onTipoImovel()"> Alugado</label>
+        </div></div>
+      <div id="imovel-proprio" class="${tip==='alugado'?'hidden':''}">
+        ${grid2(fld('a-matricula','Matrícula','text',a.matricula), fld('a-area_m2','Área (m²)','number',a.area_m2),
+                fld('a-inscricao_iptu','Inscrição IPTU','text',a.inscricao_iptu), fld('a-endereco','Endereço','text',a.endereco))}
+      </div>
+      <div id="imovel-alugado" class="${tip==='alugado'?'':'hidden'}">
+        ${fld('a-endereco_al','Endereço','text',a.endereco)}
+        ${grid2(fld('a-locador','Locador','text',a.locador), fld('a-valor_aluguel','Aluguel (R$)','number',a.valor_aluguel),
+                fld('a-vigencia_inicio','Vigência início','date',a.vigencia_inicio), fld('a-vigencia_fim','Vigência fim','date',a.vigencia_fim),
+                fld('a-indice_reajuste','Índice de reajuste','text',a.indice_reajuste), fld('a-dia_vencimento','Dia do vencimento','number',a.dia_vencimento))}
+        <div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-3">Imóvel alugado <strong>não é imobilizado</strong> e <strong>não deprecia</strong>. Entra para controle de contrato de locação e manutenção predial.</div>
+      </div>`;
+  }
+  return '';
+}
+function coletarAtributos(cat){
+  const v=(id)=>{const e=$(id); return e&&e.value!==''?e.value:null;};
+  const iv=(id)=>{const x=v(id); return x==null?null:parseInt(x);};
+  const fv=(id)=>{const x=v(id); return x==null?null:parseFloat(x);};
+  const o={}; const put=(k,val)=>{ if(val!==null&&val!==''&&!(typeof val==='number'&&isNaN(val))) o[k]=val; };
+  if (cat==='maquina'){ put('numero_serie',v('a-numero_serie')); put('fabricante',v('a-fabricante')); put('horimetro',iv('a-horimetro')); put('garantia_ate',v('a-garantia_ate')); }
+  else if (cat==='informatica'){ put('numero_serie',v('a-numero_serie')); put('fabricante',v('a-fabricante')); put('garantia_ate',v('a-garantia_ate')); put('posse',v('a-posse')); put('licenca_software',v('a-licenca_software')); }
+  else if (cat==='moveis'){ put('localizacao',v('a-localizacao')); }
+  else if (cat==='imovel'){
+    const sel=document.querySelector('input[name="tipo_imovel"]:checked'); const tipo=sel?sel.value:'proprio'; o.tipo_imovel=tipo;
+    if (tipo==='proprio'){ put('matricula',v('a-matricula')); put('area_m2',fv('a-area_m2')); put('inscricao_iptu',v('a-inscricao_iptu')); put('endereco',v('a-endereco')); }
+    else { put('endereco',v('a-endereco_al')); put('locador',v('a-locador')); put('valor_aluguel',fv('a-valor_aluguel')); put('vigencia_inicio',v('a-vigencia_inicio')); put('vigencia_fim',v('a-vigencia_fim')); put('indice_reajuste',v('a-indice_reajuste')); put('dia_vencimento',iv('a-dia_vencimento')); }
+  }
+  return o;
+}
+function onTipoImovel(){
+  const sel=document.querySelector('input[name="tipo_imovel"]:checked'); if(!sel) return;
+  const alugado = sel.value==='alugado';
+  const p=$('imovel-proprio'), al=$('imovel-alugado');
+  if(p) p.classList.toggle('hidden', alugado);
+  if(al) al.classList.toggle('hidden', !alugado);
+  ['aq-bloco','aq-titulo'].forEach(id=>{ const e=$(id); if(e) e.classList.toggle('hidden', alugado); });
+}
+
+// ----- escolher categoria (botão "Novo bem") -----
+function abrirEscolhaCategoria(){
+  const opts = [
+    ['veiculo','truck','Veículo / Empilhadeira','Carro, moto, caminhão, empilhadeira (CRLV ou manual)'],
+    ['maquina','cog','Máquina / Equipamento','Transpaleteira, balança, seladora, porta-paletes…'],
+    ['informatica','monitor','Informática / TI','PC, notebook, servidor, impressora, nobreak…'],
+    ['moveis','armchair','Móveis e utensílios','Mesa, cadeira, estante, ar-condicionado…'],
+    ['imovel','building-2','Imóvel','Galpão, loja, sala (próprio ou alugado)'],
+  ];
+  abrirModal('O que você quer cadastrar?', `<div class="grid grid-cols-1 gap-2">${opts.map(([id,icon,t,d])=>`
+    <button onclick="escolherCategoria('${id}')" class="flex items-center gap-3 p-3 border border-slate-200 rounded-lg hover:bg-violet-50 hover:border-violet-300 text-left">
+      <div class="w-10 h-10 rounded-lg bg-violet-100 text-violet-700 flex items-center justify-center shrink-0"><i data-lucide="${icon}" class="w-5 h-5"></i></div>
+      <div><div class="font-medium text-slate-800">${t}</div><div class="text-xs text-slate-500">${d}</div></div>
+    </button>`).join('')}</div>`);
+}
+function escolherCategoria(cat){ fecharModal(); if (cat==='veiculo'){ showView('upload'); } else { abrirCadastroBem(cat); } }
+
+function abrirCadastroBem(categoria){
+  BEM_CAT = categoria;
+  showView('bem');
+  const titulo = {maquina:'máquina / equipamento', informatica:'item de informática / TI', moveis:'móvel / utensílio', imovel:'imóvel'}[categoria] || 'bem';
+  const filialOpts = FILIAIS.map(f=>`<option value="${f.filial}" ${f.filial===100?'selected':''}>${f.sigla} — ${f.filial}</option>`).join('');
+  $('bem-form-content').innerHTML = `
+    <div class="bg-white rounded-xl border border-slate-200 p-6 max-w-3xl">
+      <div class="flex items-center gap-2 mb-1">${catBadge(categoria)}<h2 class="text-lg font-bold text-slate-900">Cadastrar ${titulo}</h2></div>
+      <p class="text-sm text-slate-500 mb-4">Núcleo patrimonial compartilhado + campos da categoria.</p>
+      ${fld('b-descricao','Descrição *')}
+      ${grid2(
+        `<div class="mb-3"><label class="text-xs text-slate-500">Filial</label><select id="b-filial" onchange="bemRefreshCC()" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">${filialOpts}</select></div>`,
+        `<div class="mb-3"><label class="text-xs text-slate-500">Centro de custo</label><select id="b-cc" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1"></select></div>`)}
+      <div class="text-xs font-semibold uppercase text-slate-500 mt-3 mb-2 flex items-center gap-2"><i data-lucide="list" class="w-3.5 h-3.5"></i> Atributos da categoria</div>
+      ${atributosFieldsHtml(categoria, {})}
+      <div class="text-xs font-semibold uppercase text-slate-500 mt-4 mb-2 flex items-center gap-2" id="aq-titulo"><i data-lucide="receipt" class="w-3.5 h-3.5"></i> Aquisição & patrimônio</div>
+      <div id="aq-bloco">
+      ${grid2(fld('b-data_aquisicao','Data de aquisição','date'), fld('b-valor_aquisicao','Valor de aquisição (R$)','number'),
+              fld('b-fornecedor','Fornecedor'), fld('b-nf_numero','NF nº'),
+              fld('b-vida_util_meses','Vida útil (meses)','number'), fld('b-valor_residual','Valor residual (R$)','number'))}
+      </div>
+      <div class="flex gap-2 pt-4 mt-2 border-t">
+        <button onclick="showView('listagem')" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="b-salvar" onclick="salvarBem()" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+      </div>
+      <div id="b-erro" class="hidden text-xs text-red-600 text-center mt-2"></div>
+    </div>`;
+  const vu = {maquina:120, informatica:60, moveis:120, imovel:300}[categoria];
+  if ($('b-vida_util_meses')) $('b-vida_util_meses').placeholder = vu;
+  bemRefreshCC();
+  onTipoImovel();
+  lucide.createIcons();
+}
+function bemRefreshCC(){
+  const f = parseInt($('b-filial').value || 100);
+  $('b-cc').innerHTML = CENTROS.filter(c=>c.filial===f).map(c=>`<option value="${c.codigo}">${c.nome}</option>`).join('') || '<option value="">(sem centros)</option>';
+}
+function _erroBem(txt, elId){
+  // tenta extrair {detail:{erros:[...]}} do FastAPI
+  try { const j=JSON.parse(txt); if(j.detail&&j.detail.erros) txt=j.detail.erros.join('; '); else if(j.detail) txt=(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail)); } catch(e){}
+  $(elId).textContent = 'Erro: ' + txt.substring(0,300); $(elId).classList.remove('hidden');
+}
+async function salvarBem(){
+  const btn=$('b-salvar'); btn.disabled=true; btn.classList.add('opacity-50'); $('b-erro').classList.add('hidden');
+  const v=(id)=>{const e=$(id); return e&&e.value!==''?e.value:null;};
+  const iv=(id)=>{const x=v(id); return x==null?null:parseInt(x);};
+  const fv=(id)=>{const x=v(id); return x==null?null:parseFloat(x);};
+  const body = { categoria:BEM_CAT, descricao:(v('b-descricao')||''), filial:iv('b-filial'),
+                 centro_custo:$('b-cc').value, atributos:coletarAtributos(BEM_CAT) };
+  if (!$('aq-bloco').classList.contains('hidden')){
+    const add={data_aquisicao:v('b-data_aquisicao'), valor_aquisicao:fv('b-valor_aquisicao'), fornecedor:v('b-fornecedor'),
+               nf_numero:v('b-nf_numero'), vida_util_meses:iv('b-vida_util_meses'), valor_residual:fv('b-valor_residual')};
+    Object.entries(add).forEach(([k,val])=>{ if(val!==null&&!(typeof val==='number'&&isNaN(val))) body[k]=val; });
+  }
+  try{
+    const r = await fetch(API+'/api/patrimonio/bens/cadastrar', {method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json','Idempotency-Key':(crypto.randomUUID?crypto.randomUUID():'bem-'+Date.now())},
+      body: JSON.stringify(body)});
+    if(!r.ok) throw new Error(await r.text());
+    const d = await r.json();
+    toast(`${d.codigo_patrimonial} cadastrado!`);
+    CATEGORIA_ATIVA = BEM_CAT;
+    await invalidateApiCache();
+    showView('listagem');
+  } catch(e){ _erroBem(e.message,'b-erro'); btn.disabled=false; btn.classList.remove('opacity-50'); }
+}
+
+// ----- detalhe do bem (não-veículo) -----
+function fmtAttr(k,v){
+  if (v==null||v==='') return '—';
+  if (k==='garantia_ate'||k.indexOf('vigencia')===0) return fmtDate(v);
+  if (k==='valor_aluguel') return fmtMoeda(v);
+  if (k==='tipo_imovel') return v==='alugado'?'Alugado':'Próprio';
+  if (k==='area_m2') return v+' m²';
+  return v;
+}
+function renderAtributosCard(bem){
+  const a = bem.atributos||{}; const keys=Object.keys(a);
+  if (!keys.length) return '';
+  const titulo = (bem.categoria==='imovel' && a.tipo_imovel==='alugado') ? 'Contrato de locação' : 'Detalhes';
+  return `<div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+    <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> ${titulo}</h3>
+    <dl class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+      ${keys.map(k=>`<div><dt class="text-xs text-slate-500">${ATTR_LABELS[k]||k}</dt><dd class="font-medium">${fmtAttr(k,a[k])}</dd></div>`).join('')}
+    </dl></div>`;
+}
+function renderManutPredialCard(bem){
+  const mps = bem.manutencao_predial||[];
+  const linhas = mps.length ? mps.map(m=>`
+    <div class="flex items-start justify-between p-3 bg-slate-50 rounded-lg">
+      <div class="min-w-0">
+        <div class="font-medium">${MP_LABELS[m.tipo]||m.tipo}${m.descricao?' · '+m.descricao:''}</div>
+        <div class="text-xs text-slate-500">${m.fornecedor?m.fornecedor+' · ':''}${m.data_servico?'feito '+fmtDate(m.data_servico):''}${m.custo!=null?' · '+fmtMoeda(m.custo):''}</div>
+        ${m.proximo_vencimento?`<div class="text-xs ${alertaVencimento(m.proximo_vencimento)?'text-amber-600 font-medium':'text-slate-500'}">próx. vencimento: ${fmtDate(m.proximo_vencimento)}</div>`:''}
+      </div>
+      <button onclick="removerManutPredial('${m.id}','${bem.id}')" title="remover" class="text-red-500 hover:bg-red-50 rounded p-1 shrink-0"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+    </div>`).join('') : '<div class="text-sm text-slate-400">Nenhum registro de manutenção predial.</div>';
+  return `<div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="wrench" class="w-4 h-4"></i> Manutenção predial</h3>
+      <button onclick="abrirModalManutPredial('${bem.id}')" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Registrar</button>
+    </div>
+    <div class="space-y-2">${linhas}</div>
+    <div class="text-[10px] text-slate-400 mt-3">Elétrica, hidráulica, ar-condicionado, dedetização, alvará/bombeiros — vencimentos entram nos avisos. <span class="italic">TODO: convergir com o módulo Manutenção (#1187).</span></div>
+  </div>`;
+}
+function renderDocSimples(d, bemId){
+  const btns = d.arquivo_disponivel ? `<button onclick="verDocumento('${d.upload_id}',true)" class="text-xs bg-white border border-slate-200 hover:bg-slate-50 px-2 py-1 rounded flex items-center gap-1"><i data-lucide="eye" class="w-3 h-3"></i> Ver</button>` : '';
+  return `<div class="p-3 bg-slate-50 rounded-lg flex items-center justify-between gap-2">
+    <div class="min-w-0"><div class="font-medium text-sm truncate">${d.filename_original||d.type}</div>
+      ${d.vencimento?`<div class="text-xs text-slate-500">vence ${fmtDate(d.vencimento)}</div>`:''}
+      ${d.criado_por_nome?`<div class="text-[10px] text-slate-400">por ${d.criado_por_nome}</div>`:''}</div>
+    <div class="flex gap-2 shrink-0">${btns}<button onclick="removerDocBem('${d.id}','${bemId}')" class="text-xs text-red-500 hover:bg-red-50 px-2 py-1 rounded"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div>
+  </div>`;
+}
+async function removerDocBem(docId, bemId){
+  if(!confirm('Remover este documento?')) return;
+  try{ await fetch(API+'/api/patrimonio/documentos/'+docId,{method:'DELETE',headers:{'Authorization':'Bearer '+TOKEN}}).then(r=>{if(!r.ok)throw new Error(r.statusText);});
+    toast('Documento removido.'); await invalidateApiCache(); abrirDetalhe(bemId); }catch(e){ alert('Erro: '+e.message); }
+}
+async function reativarBem(id){
+  if(!confirm('Reativar este bem? Volta para as listagens ativas.')) return;
+  try{ await fetch(API+'/api/patrimonio/veiculos/'+id+'/reativar',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN}}).then(r=>{if(!r.ok)throw new Error(r.statusText);});
+    toast('Bem reativado.'); await invalidateApiCache(); abrirDetalhe(id); }catch(e){ alert('Erro: '+e.message); }
+}
+
+async function abrirDetalheBem(id){
+  showView('detalhe');
+  $('detalhe-content').innerHTML = '<div class="animate-pulse text-slate-500">Carregando…</div>';
+  try{
+    const [bem, docsResp, movResp] = await Promise.all([
+      api('/api/patrimonio/bens/'+id),
+      api('/api/patrimonio/veiculos/'+id+'/documentos').catch(()=>({documentos:[]})),
+      api('/api/patrimonio/veiculos/'+id+'/movimentacoes').catch(()=>({movimentacoes:[]})),
+    ]);
+    const docs = (docsResp.documentos||[]);
+    const fotos = docs.filter(d=>d.type==='foto' && d.arquivo_disponivel);
+    const outros = docs.filter(d=>d.type!=='foto' && d.upload_id);
+    const movs = movResp.movimentacoes||[];
+    const dep = bem.depreciacao;
+    const alugado = bem.atributos && bem.atributos.tipo_imovel==='alugado';
+    const statusBadge = bem.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full font-medium">ativo</span>'
+                                  : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
+    const acaoBtns = bem.ativo
+      ? `<button onclick="abrirModalTransferir('${id}', ${bem.filial})" class="text-slate-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="arrow-left-right" class="w-4 h-4"></i> Transferir</button>
+         <button onclick="abrirModalBaixa('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="archive" class="w-4 h-4"></i> Baixar</button>`
+      : `<button onclick="reativarBem('${id}')" class="text-emerald-600 hover:bg-emerald-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Reativar</button>`;
+    const aquisicaoCard = `<div class="bg-white rounded-xl border border-slate-200 p-6">
+        <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="receipt" class="w-4 h-4"></i> Aquisição & patrimônio</h3>
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between"><dt class="text-slate-500">Código</dt><dd class="font-mono font-semibold">${bem.codigo_patrimonial||'—'}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Data de aquisição</dt><dd>${fmtDate(bem.data_aquisicao)}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Valor de aquisição</dt><dd class="font-medium">${fmtMoeda(bem.valor_aquisicao)}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Fornecedor</dt><dd>${bem.fornecedor||'—'}</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Nota fiscal</dt><dd>${bem.nf_numero||'—'}</dd></div>
+        </dl></div>`;
+    let depCard;
+    if (alugado) depCard = `<div class="bg-white rounded-xl border border-dashed border-slate-300 p-6 flex items-center justify-center text-center"><div class="text-sm text-slate-500"><i data-lucide="info" class="w-6 h-6 mx-auto mb-2"></i>Imóvel <strong>alugado</strong> — não é imobilizado, <strong>não deprecia</strong>.</div></div>`;
+    else if (dep) depCard = `<div class="bg-white rounded-xl border border-slate-200 p-6">
+        <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4"></i> Depreciação (${dep.metodo})</h3>
+        <dl class="space-y-2 text-sm">
+          <div class="flex justify-between"><dt class="text-slate-500">Vida útil</dt><dd>${dep.vida_util_meses} meses</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Decorrido</dt><dd>${dep.meses_decorridos} m (${dep.percentual_depreciado}%)</dd></div>
+          <div class="flex justify-between"><dt class="text-slate-500">Acumulada</dt><dd class="text-red-600">− ${fmtMoeda(dep.depreciacao_acumulada)}</dd></div>
+          <div class="flex justify-between pt-2 border-t"><dt class="text-slate-500 font-medium">Valor contábil hoje</dt><dd class="font-bold text-base">${fmtMoeda(dep.valor_contabil_atual)}</dd></div>
+        </dl>
+        <div class="mt-3 h-2 bg-slate-100 rounded-full overflow-hidden"><div class="h-full bg-violet-500" style="width:${Math.min(100,dep.percentual_depreciado)}%"></div></div></div>`;
+    else depCard = `<div class="bg-white rounded-xl border border-dashed border-slate-300 p-6 flex items-center justify-center text-center"><div class="text-sm text-slate-400"><i data-lucide="trending-down" class="w-6 h-6 mx-auto mb-2"></i>Depreciação indisponível.<br>Preencha valor e data de aquisição em <strong>Editar</strong>.</div></div>`;
+    $('detalhe-content').innerHTML = `
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+        <div class="flex items-start justify-between mb-4">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-mono px-2 py-0.5 rounded bg-violet-100 text-violet-700 font-semibold">${bem.codigo_patrimonial||'—'}</span>
+              ${catBadge(bem.categoria)} ${badgeEstado(bem.estado_operacional)}
+            </div>
+            <div class="font-bold text-2xl mt-1">${bem.descricao||bem.nome_exibicao||'—'}</div>
+            <div class="text-slate-600 mt-1 text-sm">${bem.categoria_label||''}</div>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap justify-end">
+            <button onclick="iniciarEdicaoBem('${id}')" class="text-violet-600 hover:bg-violet-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="edit-2" class="w-4 h-4"></i> Editar</button>
+            ${acaoBtns}
+          </div>
+        </div>
+        <dl class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm border-t pt-4">
+          <div><dt class="text-xs text-slate-500">Filial</dt><dd class="font-medium">${bem.filial}</dd></div>
+          <div><dt class="text-xs text-slate-500">Centro custo</dt><dd class="font-medium">${bem.centro_custo||'—'}</dd></div>
+          <div><dt class="text-xs text-slate-500">Responsável</dt><dd class="font-medium">${bem.responsavel_nome||'—'}</dd></div>
+          <div><dt class="text-xs text-slate-500">Situação</dt><dd>${statusBadge}</dd></div>
+        </dl>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">${aquisicaoCard}${depCard}</div>
+      ${renderAtributosCard(bem)}
+      ${bem.categoria==='imovel' ? renderManutPredialCard(bem) : ''}
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="file-text" class="w-4 h-4"></i> Documentos</h3>
+          <button onclick="abrirModalDoc('${id}','outro',false)" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Adicionar</button>
+        </div>
+        ${outros.length ? `<div class="space-y-2">${outros.map(d=>renderDocSimples(d,id)).join('')}</div>` : '<div class="text-sm text-slate-400">Nenhum documento anexado.</div>'}
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+        <div class="flex items-center justify-between mb-3"><h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Fotos</h3>
+          <button onclick="abrirModalFoto('${id}')" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Adicionar foto</button></div>
+        ${fotos.length ? `<div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">${fotos.map(f=>renderFoto(f,id)).join('')}</div>` : '<div class="text-sm text-slate-400">Nenhuma foto.</div>'}
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 p-6">
+        <h3 class="text-sm font-semibold uppercase text-slate-500 mb-4 flex items-center gap-2"><i data-lucide="history" class="w-4 h-4"></i> Movimentações</h3>
+        ${renderTimeline(movs)}
+      </div>`;
+    lucide.createIcons();
+  } catch(e){ $('detalhe-content').innerHTML = `<div class="text-red-600">Erro: ${e.message}</div>`; }
+}
+
+async function iniciarEdicaoBem(id){
+  const bem = await api('/api/patrimonio/bens/'+id);
+  const filialOpts = FILIAIS.map(f=>`<option value="${f.filial}" ${f.filial===bem.filial?'selected':''}>${f.sigla} — ${f.filial}</option>`).join('');
+  const ccOpts = CENTROS.filter(c=>c.filial===bem.filial).map(c=>`<option value="${c.codigo}" ${c.codigo===bem.centro_custo?'selected':''}>${c.nome}</option>`).join('');
+  const alugado = bem.categoria==='imovel' && (bem.atributos||{}).tipo_imovel==='alugado';
+  $('detalhe-content').innerHTML = `
+    <div class="bg-white rounded-xl border border-slate-200 p-6 max-w-3xl">
+      <h3 class="text-sm font-semibold uppercase text-slate-500 mb-4 flex items-center gap-2"><i data-lucide="edit-2" class="w-4 h-4"></i> Editar ${CAT_LABEL_JS[bem.categoria]||'bem'}</h3>
+      ${fld('eb-descricao','Descrição','text',bem.descricao)}
+      ${grid2(
+        `<div class="mb-3"><label class="text-xs text-slate-500">Filial</label><select id="eb-filial" onchange="ebRefreshCC()" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">${filialOpts}</select></div>`,
+        `<div class="mb-3"><label class="text-xs text-slate-500">Centro custo</label><select id="eb-cc" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">${ccOpts}</select></div>`)}
+      <div class="mb-3"><label class="text-xs text-slate-500">Estado operacional</label>
+        <select id="eb-estado" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">
+          ${[['disponivel','disponível'],['em_uso','em uso'],['em_manutencao','em manutenção'],['quebrado','quebrado'],['a_venda','à venda']].map(([vv,l])=>`<option value="${vv}" ${vv===bem.estado_operacional?'selected':''}>${l}</option>`).join('')}
+        </select></div>
+      <div class="text-xs font-semibold uppercase text-slate-500 mt-3 mb-2">Atributos</div>
+      ${atributosFieldsHtml(bem.categoria, bem.atributos||{})}
+      <div class="text-xs font-semibold uppercase text-slate-500 mt-4 mb-2" id="aq-titulo">Aquisição & patrimônio</div>
+      <div id="aq-bloco" class="${alugado?'hidden':''}">
+      ${grid2(fld('eb-data','Data de aquisição','date',bem.data_aquisicao), fld('eb-valor','Valor de aquisição (R$)','number',bem.valor_aquisicao),
+              fld('eb-forn','Fornecedor','text',bem.fornecedor), fld('eb-nf','NF nº','text',bem.nf_numero),
+              fld('eb-vida','Vida útil (meses)','number',bem.vida_util_meses), fld('eb-residual','Valor residual (R$)','number',bem.valor_residual))}
+      </div>
+      <div class="flex gap-2 pt-4 mt-2 border-t">
+        <button onclick="abrirDetalhe('${id}','${bem.categoria}')" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="eb-salvar" onclick="salvarEdicaoBem('${id}','${bem.categoria}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+      </div>
+      <div id="eb-erro" class="hidden text-xs text-red-600 text-center mt-2"></div>
+    </div>`;
+  onTipoImovel();
+  lucide.createIcons();
+}
+function ebRefreshCC(){
+  const f = parseInt($('eb-filial').value);
+  $('eb-cc').innerHTML = CENTROS.filter(c=>c.filial===f).map(c=>`<option value="${c.codigo}">${c.nome}</option>`).join('') || '<option value="">(sem centros)</option>';
+}
+async function salvarEdicaoBem(id, categoria){
+  const v=(x)=>{const e=$(x); return e&&e.value!==''?e.value:null;};
+  const iv=(x)=>{const y=v(x); return y==null?null:parseInt(y);};
+  const fv=(x)=>{const y=v(x); return y==null?null:parseFloat(y);};
+  const body = { descricao:v('eb-descricao'), filial:iv('eb-filial'), centro_custo:$('eb-cc').value,
+                 estado_operacional:$('eb-estado').value, atributos:coletarAtributos(categoria) };
+  if (!$('aq-bloco').classList.contains('hidden')){
+    body.data_aquisicao=v('eb-data'); body.valor_aquisicao=fv('eb-valor'); body.fornecedor=v('eb-forn');
+    body.nf_numero=v('eb-nf'); body.vida_util_meses=iv('eb-vida'); body.valor_residual=fv('eb-residual');
+  }
+  Object.keys(body).forEach(k=>{ if(k!=='atributos' && (body[k]===null || (typeof body[k]==='number'&&isNaN(body[k])))) delete body[k]; });
+  const btn=$('eb-salvar'); btn.disabled=true; btn.classList.add('opacity-50');
+  try{
+    const r = await fetch(API+'/api/patrimonio/bens/'+id, {method:'PATCH',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok) throw new Error(await r.text());
+    toast('Bem atualizado.'); await invalidateApiCache(); abrirDetalhe(id, categoria);
+  } catch(e){ _erroBem(e.message,'eb-erro'); btn.disabled=false; btn.classList.remove('opacity-50'); }
+}
+
+// ----- manutenção predial -----
+function abrirModalManutPredial(bemId){
+  abrirModal('Registrar manutenção predial', `
+    <div class="space-y-3">
+      <div><label class="text-xs text-slate-500">Tipo</label>
+        <select id="mp-tipo" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">
+          ${Object.entries(MP_LABELS).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}
+        </select></div>
+      <div><label class="text-xs text-slate-500">Descrição</label><input id="mp-desc" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="text-xs text-slate-500">Fornecedor</label><input id="mp-forn" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>
+        <div><label class="text-xs text-slate-500">Custo (R$)</label><input id="mp-custo" type="number" step="any" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="text-xs text-slate-500">Data do serviço</label><input id="mp-data" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>
+        <div><label class="text-xs text-slate-500">Próximo vencimento</label><input id="mp-prox" type="date" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" /></div>
+      </div>
+      <div class="text-[11px] text-slate-500">Vencimento (alvará/dedetização) entra na agenda de avisos no WhatsApp.</div>
+      <div id="mp-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mp-salvar" onclick="salvarManutPredial('${bemId}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Salvar</button>
+      </div>
+    </div>`);
+}
+async function salvarManutPredial(bemId){
+  const v=(id)=>{const e=$(id); return e&&e.value!==''?e.value:null;};
+  const body = {tipo:$('mp-tipo').value, descricao:v('mp-desc'), fornecedor:v('mp-forn'),
+                custo:v('mp-custo')?parseFloat($('mp-custo').value):null, data_servico:v('mp-data'), proximo_vencimento:v('mp-prox')};
+  const btn=$('mp-salvar'); btn.disabled=true; btn.classList.add('opacity-50');
+  try{
+    const r = await fetch(API+'/api/patrimonio/bens/'+bemId+'/manutencao-predial', {method:'POST',
+      headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    if(!r.ok) throw new Error((await r.text()).substring(0,200));
+    toast('Manutenção registrada.'); fecharModal(); await invalidateApiCache(); abrirDetalhe(bemId,'imovel');
+  } catch(e){ $('mp-erro').textContent='Erro: '+e.message; $('mp-erro').classList.remove('hidden'); btn.disabled=false; btn.classList.remove('opacity-50'); }
+}
+async function removerManutPredial(mpId, bemId){
+  if(!confirm('Remover este registro de manutenção?')) return;
+  try{ await fetch(API+'/api/patrimonio/manutencao-predial/'+mpId,{method:'DELETE',headers:{'Authorization':'Bearer '+TOKEN}}).then(r=>{if(!r.ok)throw new Error(r.statusText);});
+    toast('Registro removido.'); await invalidateApiCache(); abrirDetalhe(bemId,'imovel'); }catch(e){ alert('Erro: '+e.message); }
 }
 
 // drag & drop

@@ -111,6 +111,22 @@ PLACA_ANTIGA_RE = re.compile(r"^[A-Z]{3}[0-9]{4}$")
 RENAVAM_RE = re.compile(r"^[0-9]{11}$")
 CHASSI_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
 
+# ---------- categorias de bem (modelo híbrido) ----------
+# Núcleo compartilhado = tabela `bens`. Extensão por tipo:
+#   - 'veiculo'  -> tabela `veiculos` (ÚNICA categoria que aparece no contrato /fleet
+#                   do oil-change; a empilhadeira fica aqui, com exige_crlv=0).
+#   - demais     -> campos próprios em bens.atributos (JSON) + tabelas auxiliares
+#                   (imóvel: manutencao_predial). NUNCA entram em `veiculos`/`/fleet`.
+CATEGORIAS = ("veiculo", "maquina", "informatica", "moveis", "imovel")
+CATEGORIAS_NAO_VEICULO = ("maquina", "informatica", "moveis", "imovel")
+CAT_LABEL = {"veiculo": "Veículo", "maquina": "Máquina/Equipamento",
+             "informatica": "Informática/TI", "moveis": "Móveis e utensílios", "imovel": "Imóvel"}
+CAT_PREFIXO = {"veiculo": "PAT-VEI", "maquina": "PAT-MAQ", "informatica": "PAT-TI",
+               "moveis": "PAT-MOV", "imovel": "PAT-IMO"}
+# Vida útil contábil padrão (meses) por categoria — editável por bem.
+# Imóvel ALUGADO não deprecia (vida_util fica NULL, tratado no cadastro).
+VIDA_UTIL_PADRAO = {"veiculo": 60, "maquina": 120, "informatica": 60, "moveis": 120, "imovel": 300}
+
 # Idempotency cache em memoria (em prod -> Redis)
 IDEMPOTENCY_CACHE: dict[str, tuple[float, dict]] = {}
 IDEMPOTENCY_TTL = 86400  # 24h
@@ -232,6 +248,27 @@ def init_db() -> None:
           ativo             INTEGER NOT NULL DEFAULT 1
         );
         CREATE INDEX IF NOT EXISTS idx_doc_bem ON documentos(bem_id, tipo, ativo);
+
+        -- Manutenção predial leve (categoria 'imovel'). Elétrica, hidráulica,
+        -- ar-condicionado, dedetização, alvará/bombeiros. `proximo_vencimento`
+        -- alimenta a agenda de avisos (dedetização/alvará renovam periodicamente).
+        -- TODO[#1187]: converge com o módulo de Manutenção Veicular (fusão adiada
+        -- por decisão do Renato — por ora a manutenção predial vive aqui).
+        CREATE TABLE IF NOT EXISTS manutencao_predial (
+          id                 TEXT PRIMARY KEY,
+          bem_id             TEXT NOT NULL REFERENCES bens(cod_interno) ON DELETE CASCADE,
+          tipo               TEXT NOT NULL,  -- eletrica, hidraulica, ar_condicionado, dedetizacao, alvara_bombeiros, outro
+          descricao          TEXT,
+          fornecedor         TEXT,
+          custo              REAL,
+          data_servico       TEXT,
+          proximo_vencimento TEXT,
+          observacao         TEXT,
+          criado_por         INTEGER,
+          criado_por_nome    TEXT,
+          criado_em          TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_manut_predial_bem ON manutencao_predial(bem_id, criado_em DESC);
     """)
 
     # migration idempotente — adiciona colunas novas em DBs já existentes
@@ -264,10 +301,22 @@ def init_db() -> None:
         ("vida_util_meses",     "ALTER TABLE bens ADD COLUMN vida_util_meses INTEGER"),
         ("metodo_depreciacao",  "ALTER TABLE bens ADD COLUMN metodo_depreciacao TEXT DEFAULT 'linear'"),
         ("estado_operacional",  "ALTER TABLE bens ADD COLUMN estado_operacional TEXT DEFAULT 'disponivel'"),
+        # categorias (modelo híbrido). categoria default 'veiculo' preserva todos os
+        # bens já existentes como veículos; exige_crlv default 1 (veículo de rua).
+        ("categoria",           "ALTER TABLE bens ADD COLUMN categoria TEXT NOT NULL DEFAULT 'veiculo'"),
+        ("exige_crlv",          "ALTER TABLE bens ADD COLUMN exige_crlv INTEGER NOT NULL DEFAULT 1"),
+        ("atributos",           "ALTER TABLE bens ADD COLUMN atributos TEXT"),
+        ("descricao",           "ALTER TABLE bens ADD COLUMN descricao TEXT"),
     ]
     for col, sql in bens_migrations:
         if col not in bcols:
             cur.execute(sql)
+
+    # backfill único (só quando exige_crlv acabou de ser criada): a antiga
+    # "gambiarra" tipo_bem='equipamento' (empilhadeira) vira categoria='veiculo'
+    # + exige_crlv=0 — fica em `veiculos`/`/fleet`, mas sem exigir placa/CRLV.
+    if "exige_crlv" not in bcols:
+        cur.execute("UPDATE bens SET exige_crlv = 0 WHERE tipo_bem = 'equipamento'")
 
     # migration: remove CHECK antigo de documentos (pra aceitar vistoria/foto/outro)
     drow = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='documentos'").fetchone()
@@ -608,14 +657,18 @@ def sanitize_vision(raw: dict) -> dict:
     return {k: v for k, v in raw.items() if k in allowed}
 
 
-def validar_dados(d: dict, tipo_bem: str = "veiculo") -> list[str]:
-    """Valida dados do bem.
-    tipo='veiculo': placa/renavam/chassi/vencimento_crlv obrigatórios e no formato.
-    tipo='equipamento': todos opcionais (empilhadeira não tem CRLV); se informados,
-      placa e renavam são validados; chassi/série é texto livre.
+def validar_dados(d: dict, categoria: str = "veiculo", exige_crlv: bool = True) -> list[str]:
+    """Valida dados do bem segundo categoria e se exige CRLV.
+
+    - categoria 'veiculo' + exige_crlv=True: placa/renavam/chassi/vencimento_crlv
+      obrigatórios e no formato (veículo de rua).
+    - categoria 'veiculo' + exige_crlv=False (empilhadeira): nada de CRLV obrigatório;
+      se placa/renavam vierem, valida o formato. Recomenda marca/modelo ou descrição.
+    - categorias não-veículo (maquina/informatica/moveis/imovel): sem campos de CRLV;
+      exige `descricao`. Imóvel exige sub-flag próprio/alugado em atributos.
     """
     erros = []
-    eh_veiculo = tipo_bem == "veiculo"
+    eh_veic_crlv = (categoria == "veiculo" and exige_crlv)
     placa = (d.get("placa") or "").upper().replace("-", "").replace(" ", "")
     renavam = d.get("renavam") or ""
     chassi = (d.get("chassi") or "").upper()
@@ -623,27 +676,39 @@ def validar_dados(d: dict, tipo_bem: str = "veiculo") -> list[str]:
     if placa:
         if not (PLACA_MERCOSUL_RE.match(placa) or PLACA_ANTIGA_RE.match(placa)):
             erros.append(f"placa inválida: {placa}")
-    elif eh_veiculo:
+    elif eh_veic_crlv:
         erros.append("placa obrigatória")
 
     if renavam:
         if not RENAVAM_RE.match(renavam):
             erros.append("renavam deve ter 11 dígitos")
-    elif eh_veiculo:
+    elif eh_veic_crlv:
         erros.append("renavam obrigatório")
 
     if chassi:
-        # veículo exige VIN de 17 chars; equipamento aceita série livre
-        if eh_veiculo and not CHASSI_RE.match(chassi):
+        # veículo de rua exige VIN de 17 chars; demais aceitam série livre
+        if eh_veic_crlv and not CHASSI_RE.match(chassi):
             erros.append("chassi inválido (17 chars alfanuméricos sem I/O/Q)")
-    elif eh_veiculo:
+    elif eh_veic_crlv:
         erros.append("chassi obrigatório")
 
-    if eh_veiculo and not d.get("vencimento_crlv"):
+    if eh_veic_crlv and not d.get("vencimento_crlv"):
         erros.append("vencimento_crlv obrigatório")
 
-    if tipo_bem == "equipamento" and not (d.get("marca") or d.get("modelo")):
-        erros.append("informe ao menos marca ou modelo do equipamento")
+    # veículo sem CRLV (empilhadeira): precisa de algo que o identifique
+    if categoria == "veiculo" and not exige_crlv and not (
+            d.get("marca") or d.get("modelo") or (d.get("descricao") or "").strip()):
+        erros.append("informe ao menos marca, modelo ou descrição do equipamento")
+
+    # bens não-veículo: exigem descrição (não têm placa/marca/modelo no núcleo)
+    if categoria in CATEGORIAS_NAO_VEICULO and not (d.get("descricao") or "").strip():
+        erros.append("informe a descrição do bem")
+
+    # imóvel: precisa declarar se é próprio ou alugado
+    if categoria == "imovel":
+        ti = ((d.get("atributos") or {}).get("tipo_imovel") or "").strip()
+        if ti not in ("proprio", "alugado"):
+            erros.append("imóvel: informe se é próprio ou alugado")
     return erros
 
 
@@ -670,9 +735,10 @@ def validar_e_salvar_arquivo(content: bytes, content_type: str, filename: str) -
     return upload_id
 
 
-def gerar_codigo_patrimonial(cur, tipo_bem: str) -> str:
-    """Gera o próximo código: PAT-VEI-NNN (veículo) / PAT-EQP-NNN (equipamento)."""
-    pref = "PAT-EQP" if tipo_bem == "equipamento" else "PAT-VEI"
+def gerar_codigo_patrimonial(cur, categoria: str = "veiculo") -> str:
+    """Próximo código patrimonial por categoria: PAT-VEI/MAQ/TI/MOV/IMO-NNN.
+    (Códigos legados PAT-EQP-NNN da empilhadeira antiga são preservados como estão.)"""
+    pref = CAT_PREFIXO.get(categoria, "PAT-VEI")
     row = cur.execute(
         "SELECT codigo_patrimonial FROM bens WHERE codigo_patrimonial LIKE ? "
         "ORDER BY codigo_patrimonial DESC LIMIT 1", (pref + "%",)).fetchone()
@@ -731,7 +797,10 @@ def add_meses(d: date, m: int) -> date:
 
 
 _DOC_NOME = {"crlv": "CRLV", "ipva": "IPVA", "seguro": "Seguro", "vistoria": "Vistoria",
-             "troca_oleo": "Troca de óleo"}
+             "troca_oleo": "Troca de óleo",
+             # manutenção predial (imóveis)
+             "eletrica": "Elétrica", "hidraulica": "Hidráulica", "ar_condicionado": "Ar-condicionado",
+             "dedetizacao": "Dedetização", "alvara_bombeiros": "Alvará/Bombeiros", "outro": "Manut. predial"}
 
 
 def coletar_alertas(dias: int = 30) -> list[dict]:
@@ -749,6 +818,13 @@ def coletar_alertas(dias: int = 30) -> list[dict]:
     docs = conn.execute(
         "SELECT bem_id, tipo, vencimento FROM documentos WHERE ativo = 1 AND vencimento IS NOT NULL"
     ).fetchall()
+    # manutenção predial dos imóveis (alvará/bombeiros, dedetização) com próximo vencimento
+    predial = conn.execute("""
+        SELECT b.cod_interno AS bem_id, b.codigo_patrimonial, b.filial, b.descricao,
+               m.tipo, m.proximo_vencimento
+        FROM manutencao_predial m JOIN bens b ON b.cod_interno = m.bem_id
+        WHERE b.deleted_at IS NULL AND m.proximo_vencimento IS NOT NULL
+    """).fetchall()
     conn.close()
 
     docs_by = {}
@@ -789,6 +865,22 @@ def coletar_alertas(dias: int = 30) -> list[dict]:
                     })
             except Exception:
                 pass
+
+    for pr in predial:
+        p = dict(pr)
+        try:
+            venc = date.fromisoformat(p["proximo_vencimento"])
+        except Exception:
+            continue
+        dd = (venc - hoje).days
+        if dd <= dias:
+            alertas.append({
+                "bem_id": p["bem_id"], "ident": p["codigo_patrimonial"] or p["bem_id"][:6],
+                "nome": p.get("descricao") or "", "filial": p["filial"],
+                "codigo_patrimonial": p["codigo_patrimonial"], "tipo": p["tipo"],
+                "vencimento": p["proximo_vencimento"], "dias": dd,
+                "categoria": "vencido" if dd < 0 else "vencendo",
+            })
     alertas.sort(key=lambda a: a["dias"])
     return alertas
 
@@ -1156,7 +1248,12 @@ def cadastrar_veiculo(
     tipo_bem = data.get("tipo_bem") or "veiculo"
     if tipo_bem not in ("veiculo", "equipamento"):
         raise HTTPException(422, "tipo_bem deve ser 'veiculo' ou 'equipamento'")
-    erros = validar_dados(data, tipo_bem)
+    # Este endpoint cadastra SÓ a categoria 'veiculo' (carros/motos/caminhões e a
+    # empilhadeira). tipo_bem='equipamento' = empilhadeira: continua categoria veículo
+    # (fica no /fleet do oil-change), porém sem exigir placa/RENAVAM/chassi/CRLV.
+    categoria = "veiculo"
+    exige_crlv = (tipo_bem == "veiculo")
+    erros = validar_dados(data, categoria, exige_crlv)
     if erros:
         raise HTTPException(422, {"erros": erros})
 
@@ -1182,25 +1279,31 @@ def cadastrar_veiculo(
         bem_id = uuid.uuid4().hex
         ts = now_iso()
         status = derive_status(venc) if venc else "ativo"
-        codigo_pat = gerar_codigo_patrimonial(cur, tipo_bem)
-        # vida útil default: 60 meses (5 anos) p/ veículo, 120 (10 anos) p/ equipamento
+        codigo_pat = gerar_codigo_patrimonial(cur, categoria)
+        # vida útil default: 60 meses (5 anos) p/ veículo de rua, 120 (10 anos) p/ empilhadeira
         vida_util = data.get("vida_util_meses")
         if vida_util is None:
-            vida_util = 60 if tipo_bem == "veiculo" else 120
+            vida_util = 60 if exige_crlv else 120
         estado_op = data.get("estado_operacional") or "disponivel"
+        # empilhadeira (sem placa) ganha uma descrição p/ aparecer nomeada na listagem
+        descricao = None
+        if not exige_crlv:
+            descricao = (f"{data.get('marca') or ''} {data.get('modelo') or ''}").strip() or None
 
         cur.execute("""
             INSERT INTO bens (cod_interno, codigo_patrimonial, filial, centro_custo,
                               responsavel_user_id, responsavel_nome, data_aquisicao,
                               valor_aquisicao, fornecedor, nf_numero, nf_chave,
                               valor_residual, vida_util_meses, metodo_depreciacao,
-                              estado_operacional, tipo_bem, status, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                              estado_operacional, tipo_bem, categoria, exige_crlv, descricao,
+                              status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (bem_id, codigo_pat, data["filial"], data["centro_custo"], user["user_id"],
               user["nome"], data.get("data_aquisicao"), data.get("valor_aquisicao"),
               data.get("fornecedor"), data.get("nf_numero"), data.get("nf_chave"),
               data.get("valor_residual") or 0, vida_util, "linear",
-              estado_op, tipo_bem, status, ts, ts))
+              estado_op, tipo_bem, categoria, 1 if exige_crlv else 0, descricao,
+              status, ts, ts))
 
         # movimentação inicial de aquisição (timeline)
         cur.execute("""
@@ -1413,7 +1516,7 @@ def editar_veiculo(
         conn = db()
         atual = conn.execute("""
             SELECT v.placa, v.renavam, v.chassi, v.vencimento_crlv,
-                   v.marca, v.modelo, b.tipo_bem
+                   v.marca, v.modelo, b.tipo_bem, b.categoria, b.exige_crlv
             FROM veiculos v JOIN bens b ON b.cod_interno = v.bem_id
             WHERE v.bem_id = ?
         """, (bem_id,)).fetchone()
@@ -1428,7 +1531,8 @@ def editar_veiculo(
             "marca": updates.get("marca", atual["marca"]),
             "modelo": updates.get("modelo", atual["modelo"]),
         }
-        erros = validar_dados(merged, atual["tipo_bem"] or "veiculo")
+        # empilhadeira (categoria veículo, exige_crlv=0) NÃO exige placa/RENAVAM/chassi/CRLV
+        erros = validar_dados(merged, atual["categoria"] or "veiculo", bool(atual["exige_crlv"]))
         if erros:
             raise HTTPException(422, {"erros": erros})
 
@@ -1682,17 +1786,18 @@ def listar_documentos(
     require_role(user, "patrimonio:listar")
     conn = db()
     veic = conn.execute(
-        "SELECT cod_interno FROM bens WHERE cod_interno = ? AND deleted_at IS NULL",
+        "SELECT categoria FROM bens WHERE cod_interno = ? AND deleted_at IS NULL",
         (bem_id,)).fetchone()
     conn.close()
     if not veic:
-        raise HTTPException(404, "Veículo não encontrado")
+        raise HTTPException(404, "Bem não encontrado")
     docs = _documentos_do_veiculo(bem_id, incluir_historico)
-    # garante os tipos com validade no retorno (placeholder se não cadastrado)
-    presentes = {d["type"] for d in docs if d["ativo"]}
-    for tipo in ("crlv", "ipva", "seguro", "vistoria"):
-        if tipo not in presentes:
-            docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
+    # placeholders de CRLV/IPVA/seguro/vistoria só fazem sentido para veículo
+    if (veic["categoria"] or "veiculo") == "veiculo":
+        presentes = {d["type"] for d in docs if d["ativo"]}
+        for tipo in ("crlv", "ipva", "seguro", "vistoria"):
+            if tipo not in presentes:
+                docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
     return {"vehicle_id": bem_id, "documentos": docs}
 
 
@@ -1802,13 +1907,16 @@ def reativar_veiculo(bem_id: str, authorization: Optional[str] = Header(None)):
     user = auth_check(authorization)
     require_role(user, "patrimonio:cadastrar")
     conn = db()
+    # LEFT JOIN: bens não-veículo não têm linha em `veiculos`
     row = conn.execute(
-        "SELECT v.vencimento_crlv FROM bens b JOIN veiculos v ON v.bem_id = b.cod_interno "
-        "WHERE b.cod_interno = ?", (bem_id,)).fetchone()
+        "SELECT b.categoria, v.vencimento_crlv FROM bens b "
+        "LEFT JOIN veiculos v ON v.bem_id = b.cod_interno WHERE b.cod_interno = ?",
+        (bem_id,)).fetchone()
     if not row:
         conn.close()
-        raise HTTPException(404, "Veículo não encontrado")
-    novo_status = derive_status(row["vencimento_crlv"])
+        raise HTTPException(404, "Bem não encontrado")
+    novo_status = (derive_status(row["vencimento_crlv"])
+                   if (row["categoria"] == "veiculo" and row["vencimento_crlv"]) else "ativo")
     cur = conn.cursor()
     cur.execute("UPDATE bens SET deleted_at = NULL, status = ?, updated_at = ? WHERE cod_interno = ?",
                 (novo_status, now_iso(), bem_id))
@@ -1876,6 +1984,420 @@ def download_upload(
         media_type=media_type,
         headers={"Content-Disposition": f'{disposition}; filename="{nome_original}"'},
     )
+
+
+# ============================================================
+# Bens multi-categoria (máquina / informática / móveis / imóvel)
+# Núcleo em `bens`; campos próprios em bens.atributos (JSON).
+# 'veiculo' continua com seus próprios endpoints (acima) + tabela `veiculos`.
+# Estes endpoints NUNCA tocam `veiculos` — logo, não afetam o contrato /fleet.
+# ============================================================
+
+def _parse_atributos(raw) -> dict:
+    if not raw:
+        return {}
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _bem_to_dto(row: dict) -> dict:
+    """Row unificado (bens LEFT JOIN veiculos) -> DTO de bem (qualquer categoria)."""
+    cat = row.get("categoria") or "veiculo"
+    placa = row.get("placa")
+    marca, modelo = row.get("marca"), row.get("modelo")
+    if cat == "veiculo":
+        nome = placa or (f"{marca or ''} {modelo or ''}").strip() or row.get("descricao") or "—"
+    else:
+        nome = row.get("descricao") or (f"{marca or ''} {modelo or ''}").strip() or "—"
+    return {
+        "id": row.get("bem_id") or row.get("cod_interno"),
+        "codigo_patrimonial": row.get("codigo_patrimonial"),
+        "categoria": cat,
+        "categoria_label": CAT_LABEL.get(cat, cat),
+        "tipo_bem": row.get("tipo_bem") or "veiculo",
+        "exige_crlv": bool(row.get("exige_crlv", 1)),
+        "descricao": row.get("descricao"),
+        "nome_exibicao": nome,
+        "filial": row.get("filial"),
+        "filial_id": row.get("filial"),
+        "centro_custo": row.get("centro_custo"),
+        "responsavel_nome": row.get("responsavel_nome"),
+        "responsavel_user_id": row.get("responsavel_user_id"),
+        "estado_operacional": row.get("estado_operacional"),
+        "status": row.get("status"),
+        "ativo": row.get("deleted_at") is None and row.get("status") != "baixado",
+        "data_aquisicao": row.get("data_aquisicao"),
+        "valor_aquisicao": row.get("valor_aquisicao"),
+        "fornecedor": row.get("fornecedor"),
+        "nf_numero": row.get("nf_numero"),
+        "nf_chave": row.get("nf_chave"),
+        "valor_residual": row.get("valor_residual"),
+        "vida_util_meses": row.get("vida_util_meses"),
+        "metodo_depreciacao": row.get("metodo_depreciacao"),
+        "atributos": _parse_atributos(row.get("atributos")),
+        # campos de veículo — None para as demais categorias
+        "placa": placa, "marca": marca, "modelo": modelo,
+        "ano": row.get("ano_fabricacao"), "km_atual": row.get("km_atual"),
+        "vencimento_crlv": row.get("vencimento_crlv"),
+        "km_ultima_troca": row.get("km_ultima_troca"),
+        "intervalo_meses": row.get("intervalo_meses"),
+        "data_ultima_troca": row.get("data_ultima_troca"),
+        "margem_dias_aviso": row.get("margem_dias_aviso"),
+    }
+
+
+_BEM_SELECT = """
+    SELECT b.cod_interno AS bem_id, b.codigo_patrimonial, b.categoria, b.exige_crlv,
+           b.tipo_bem, b.filial, b.centro_custo, b.responsavel_user_id, b.responsavel_nome,
+           b.estado_operacional, b.status, b.deleted_at, b.descricao,
+           b.data_aquisicao, b.valor_aquisicao, b.fornecedor, b.nf_numero, b.nf_chave,
+           b.valor_residual, b.vida_util_meses, b.metodo_depreciacao, b.atributos,
+           v.placa, v.marca, v.modelo, v.ano_fabricacao, v.km_atual, v.vencimento_crlv,
+           v.km_ultima_troca, v.intervalo_meses, v.data_ultima_troca, v.margem_dias_aviso
+    FROM bens b LEFT JOIN veiculos v ON v.bem_id = b.cod_interno
+"""
+
+
+@app.get("/api/patrimonio/bens")
+def listar_bens(
+    categoria: Optional[str] = None,
+    filial: Optional[int] = None,
+    status: Optional[str] = None,
+    busca: Optional[str] = None,
+    incluir_baixados: bool = False,
+    authorization: Optional[str] = Header(None),
+):
+    """Listagem unificada de TODAS as categorias de bem (inclui veículos)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    # filtros compartilhados (tudo MENOS categoria) — usados também na contagem das abas
+    conds: list = []
+    params: list = []
+    if status == "baixado":
+        conds.append("b.deleted_at IS NOT NULL")
+    elif not incluir_baixados:
+        conds.append("b.deleted_at IS NULL")
+    if filial:
+        conds.append("b.filial = ?")
+        params.append(filial)
+    if status and status != "baixado":
+        conds.append("b.status = ? AND b.deleted_at IS NULL")
+        params.append(status)
+    if busca:
+        like = f"%{busca.upper()}%"
+        conds.append("(UPPER(COALESCE(v.placa,'')) LIKE ? OR UPPER(COALESCE(v.modelo,'')) LIKE ?"
+                     " OR UPPER(COALESCE(v.marca,'')) LIKE ? OR UPPER(COALESCE(b.descricao,'')) LIKE ?"
+                     " OR UPPER(COALESCE(b.codigo_patrimonial,'')) LIKE ?)")
+        params += [like, like, like, like, like]
+    where = " AND ".join(conds) if conds else "1=1"
+
+    sql = _BEM_SELECT + " WHERE " + where
+    main_params = list(params)
+    if categoria and categoria in CATEGORIAS:
+        sql += " AND b.categoria = ?"
+        main_params.append(categoria)
+    sql += " ORDER BY b.categoria, b.codigo_patrimonial"
+
+    conn = db()
+    rows = [dict(r) for r in conn.execute(sql, main_params).fetchall()]
+    # contagem por categoria sobre TODO o inventário (mesmos filtros, menos categoria)
+    por_categoria = {c: 0 for c in CATEGORIAS}
+    cnt_sql = ("SELECT b.categoria AS categoria, COUNT(*) AS n "
+               "FROM bens b LEFT JOIN veiculos v ON v.bem_id = b.cod_interno "
+               "WHERE " + where + " GROUP BY b.categoria")
+    for r in conn.execute(cnt_sql, params).fetchall():
+        por_categoria[r["categoria"]] = r["n"]
+    conn.close()
+
+    bens = [_bem_to_dto(r) for r in rows]
+    today = date.today()
+    def _venc_30(b):
+        if b["categoria"] != "veiculo" or not b.get("vencimento_crlv"):
+            return False
+        try:
+            return 0 <= (date.fromisoformat(b["vencimento_crlv"]) - today).days <= 30
+        except Exception:
+            return False
+    kpis = {
+        "total": len(bens),
+        "ativos": sum(1 for b in bens if b["ativo"]),
+        "valor_total": round(sum(b["valor_aquisicao"] or 0 for b in bens), 2),
+        "vencendo_30d": sum(1 for b in bens if _venc_30(b)),
+        "em_manutencao": sum(1 for b in bens if b["estado_operacional"] == "em_manutencao"),
+    }
+    return {"bens": bens, "kpis": kpis, "por_categoria": por_categoria}
+
+
+@app.get("/api/patrimonio/bens/{bem_id}")
+def obter_bem(bem_id: str, authorization: Optional[str] = Header(None)):
+    """Detalhe unificado de um bem (qualquer categoria) + depreciação + manut. predial."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    conn = db()
+    row = conn.execute(_BEM_SELECT + " WHERE b.cod_interno = ?", (bem_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Bem não encontrado")
+    row = dict(row)
+    dto = _bem_to_dto(row)
+    # depreciação (None p/ imóvel alugado ou bem sem dados de aquisição)
+    dto["depreciacao"] = calcular_depreciacao({
+        "valor_aquisicao": row.get("valor_aquisicao"),
+        "data_aquisicao": row.get("data_aquisicao"),
+        "vida_util_meses": row.get("vida_util_meses"),
+        "valor_residual": row.get("valor_residual"),
+        "metodo_depreciacao": row.get("metodo_depreciacao"),
+    })
+    if dto["categoria"] == "imovel":
+        mps = conn.execute(
+            "SELECT * FROM manutencao_predial WHERE bem_id = ? ORDER BY COALESCE(data_servico,'') DESC, criado_em DESC",
+            (bem_id,)).fetchall()
+        dto["manutencao_predial"] = [dict(m) for m in mps]
+    conn.close()
+    return dto
+
+
+class BemIn(BaseModel):
+    categoria: str
+    descricao: str
+    filial: int
+    centro_custo: str
+    data_aquisicao: Optional[str] = None
+    valor_aquisicao: Optional[float] = Field(default=None, ge=0)
+    fornecedor: Optional[str] = None
+    nf_numero: Optional[str] = None
+    nf_chave: Optional[str] = None
+    valor_residual: Optional[float] = Field(default=None, ge=0)
+    vida_util_meses: Optional[int] = Field(default=None, ge=1)
+    estado_operacional: Optional[str] = None
+    atributos: dict = Field(default_factory=dict)
+
+
+@app.post("/api/patrimonio/bens/cadastrar")
+def cadastrar_bem(
+    body: BemIn,
+    authorization: Optional[str] = Header(None),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+):
+    """Cadastra um bem NÃO-veículo (máquina/informática/móveis/imóvel).
+    Veículo (e empilhadeira) continuam em /api/patrimonio/veiculos/cadastrar."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    now = time.time()
+    if idempotency_key and idempotency_key in IDEMPOTENCY_CACHE:
+        ts0, cached = IDEMPOTENCY_CACHE[idempotency_key]
+        if now - ts0 < IDEMPOTENCY_TTL:
+            return JSONResponse(cached, headers={"X-Idempotent-Replay": "true"})
+
+    data = body.model_dump()
+    categoria = data["categoria"]
+    if categoria not in CATEGORIAS_NAO_VEICULO:
+        raise HTTPException(422, f"categoria deve ser uma de: {', '.join(CATEGORIAS_NAO_VEICULO)}")
+    erros = validar_dados(data, categoria, exige_crlv=False)
+    if erros:
+        raise HTTPException(422, {"erros": erros})
+
+    atributos = data.get("atributos") or {}
+    alugado = (categoria == "imovel" and atributos.get("tipo_imovel") == "alugado")
+    # imóvel ALUGADO não é imobilizado: não deprecia
+    vida_util = data.get("vida_util_meses")
+    if alugado:
+        vida_util, metodo = None, "nao_aplicavel"
+    else:
+        if vida_util is None:
+            vida_util = VIDA_UTIL_PADRAO.get(categoria, 120)
+        metodo = "linear"
+    estado_op = data.get("estado_operacional") or "disponivel"
+
+    conn = db()
+    try:
+        cur = conn.cursor()
+        bem_id = uuid.uuid4().hex
+        ts = now_iso()
+        codigo_pat = gerar_codigo_patrimonial(cur, categoria)
+        cur.execute("""
+            INSERT INTO bens (cod_interno, codigo_patrimonial, filial, centro_custo,
+                              responsavel_user_id, responsavel_nome, data_aquisicao,
+                              valor_aquisicao, fornecedor, nf_numero, nf_chave,
+                              valor_residual, vida_util_meses, metodo_depreciacao,
+                              estado_operacional, tipo_bem, categoria, exige_crlv, descricao,
+                              atributos, status, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,'ativo',?,?)
+        """, (bem_id, codigo_pat, data["filial"], data["centro_custo"], user["user_id"],
+              user["nome"], data.get("data_aquisicao"), data.get("valor_aquisicao"),
+              data.get("fornecedor"), data.get("nf_numero"), data.get("nf_chave"),
+              data.get("valor_residual") or 0, vida_util, metodo, estado_op,
+              "equipamento", categoria, (data.get("descricao") or "").strip(),
+              json.dumps(atributos), ts, ts))
+        cur.execute("""
+            INSERT INTO movimentacoes (id, bem_id, tipo, para_filial, para_responsavel,
+                                       para_estado, valor, data_evento, executado_por,
+                                       executado_por_nome, created_at)
+            VALUES (?,?,'aquisicao',?,?,?,?,?,?,?,?)
+        """, (uuid.uuid4().hex, bem_id, data["filial"], user["user_id"], estado_op,
+              data.get("valor_aquisicao"), data.get("data_aquisicao") or ts[:10],
+              user["user_id"], user["nome"], ts))
+        conn.commit()
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        raise HTTPException(409, f"Conflito: {e}")
+    finally:
+        conn.close()
+
+    resp = {"bem_id": bem_id, "codigo_patrimonial": codigo_pat, "categoria": categoria,
+            "descricao": (data.get("descricao") or "").strip(), "created_at": ts}
+    if idempotency_key:
+        IDEMPOTENCY_CACHE[idempotency_key] = (now, resp)
+    return resp
+
+
+class BemPatch(BaseModel):
+    descricao: Optional[str] = None
+    filial: Optional[int] = None
+    centro_custo: Optional[str] = None
+    responsavel_user_id: Optional[int] = None
+    responsavel_nome: Optional[str] = None
+    estado_operacional: Optional[str] = None
+    status: Optional[str] = None
+    data_aquisicao: Optional[str] = None
+    valor_aquisicao: Optional[float] = Field(default=None, ge=0)
+    fornecedor: Optional[str] = None
+    nf_numero: Optional[str] = None
+    nf_chave: Optional[str] = None
+    valor_residual: Optional[float] = Field(default=None, ge=0)
+    vida_util_meses: Optional[int] = Field(default=None, ge=1)
+    atributos: Optional[dict] = None
+
+
+_BEM_PATCH_FIELDS = {"descricao", "filial", "centro_custo", "responsavel_user_id",
+                     "responsavel_nome", "estado_operacional", "status", "data_aquisicao",
+                     "valor_aquisicao", "fornecedor", "nf_numero", "nf_chave",
+                     "valor_residual", "vida_util_meses"}
+
+
+@app.patch("/api/patrimonio/bens/{bem_id}")
+def editar_bem(bem_id: str, body: BemPatch, authorization: Optional[str] = Header(None)):
+    """Edita núcleo + atributos de um bem NÃO-veículo. (Veículo usa o PATCH /veiculos/{id}.)"""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    raw = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not raw:
+        raise HTTPException(422, "body vazio — informe ao menos um campo")
+    if "status" in raw and raw["status"] not in ("ativo", "manutencao", "vencido", "baixado"):
+        raise HTTPException(422, "status inválido")
+    if "data_aquisicao" in raw:
+        try:
+            date.fromisoformat(raw["data_aquisicao"])
+        except ValueError:
+            raise HTTPException(422, "data_aquisicao deve ser YYYY-MM-DD")
+
+    conn = db()
+    atual = conn.execute("SELECT categoria FROM bens WHERE cod_interno = ?", (bem_id,)).fetchone()
+    if not atual:
+        conn.close()
+        raise HTTPException(404, "Bem não encontrado")
+    if (atual["categoria"] or "veiculo") == "veiculo":
+        conn.close()
+        raise HTTPException(422, "Bem da categoria veículo — edite por /api/patrimonio/veiculos/{id}")
+
+    sets, params = [], []
+    for k in _BEM_PATCH_FIELDS:
+        if k in raw:
+            sets.append(f"{k} = ?")
+            params.append(raw[k])
+    if "atributos" in raw:
+        sets.append("atributos = ?")
+        params.append(json.dumps(raw["atributos"]))
+    sets.append("updated_at = ?")
+    params.append(now_iso())
+    params.append(bem_id)
+    cur = conn.cursor()
+    cur.execute(f"UPDATE bens SET {', '.join(sets)} WHERE cod_interno = ?", params)
+    conn.commit()
+    conn.close()
+    return {"id": bem_id, "updated": raw}
+
+
+# ---------- manutenção predial (categoria imóvel) ----------
+_MP_TIPOS = ("eletrica", "hidraulica", "ar_condicionado", "dedetizacao", "alvara_bombeiros", "outro")
+MP_LABEL = {"eletrica": "Elétrica", "hidraulica": "Hidráulica", "ar_condicionado": "Ar-condicionado",
+            "dedetizacao": "Dedetização", "alvara_bombeiros": "Alvará / Bombeiros", "outro": "Outro"}
+
+
+class ManutPredialIn(BaseModel):
+    tipo: str
+    descricao: Optional[str] = None
+    fornecedor: Optional[str] = None
+    custo: Optional[float] = Field(default=None, ge=0)
+    data_servico: Optional[str] = None
+    proximo_vencimento: Optional[str] = None
+    observacao: Optional[str] = None
+
+
+@app.get("/api/patrimonio/bens/{bem_id}/manutencao-predial")
+def listar_manut_predial(bem_id: str, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:listar")
+    conn = db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM manutencao_predial WHERE bem_id = ? ORDER BY COALESCE(data_servico,'') DESC, criado_em DESC",
+        (bem_id,)).fetchall()]
+    conn.close()
+    return {"bem_id": bem_id, "manutencao_predial": rows}
+
+
+@app.post("/api/patrimonio/bens/{bem_id}/manutencao-predial")
+def add_manut_predial(bem_id: str, body: ManutPredialIn, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    if body.tipo not in _MP_TIPOS:
+        raise HTTPException(422, f"tipo deve ser um de: {', '.join(_MP_TIPOS)}")
+    for campo, val in (("data_servico", body.data_servico), ("proximo_vencimento", body.proximo_vencimento)):
+        if val:
+            try:
+                date.fromisoformat(val)
+            except ValueError:
+                raise HTTPException(422, f"{campo} deve ser YYYY-MM-DD")
+    conn = db()
+    bem = conn.execute(
+        "SELECT categoria FROM bens WHERE cod_interno = ? AND deleted_at IS NULL", (bem_id,)).fetchone()
+    if not bem:
+        conn.close()
+        raise HTTPException(404, "Bem não encontrado")
+    if (bem["categoria"] or "") != "imovel":
+        conn.close()
+        raise HTTPException(422, "Manutenção predial só se aplica a imóveis")
+    mp_id = uuid.uuid4().hex
+    ts = now_iso()
+    conn.execute("""
+        INSERT INTO manutencao_predial (id, bem_id, tipo, descricao, fornecedor, custo,
+                                        data_servico, proximo_vencimento, observacao,
+                                        criado_por, criado_por_nome, criado_em)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (mp_id, bem_id, body.tipo, body.descricao, body.fornecedor, body.custo,
+          body.data_servico, body.proximo_vencimento, body.observacao,
+          user["user_id"], user["nome"], ts))
+    conn.commit()
+    conn.close()
+    return {"id": mp_id, "tipo": body.tipo, "proximo_vencimento": body.proximo_vencimento}
+
+
+@app.delete("/api/patrimonio/manutencao-predial/{mp_id}")
+def remover_manut_predial(mp_id: str, authorization: Optional[str] = Header(None)):
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM manutencao_predial WHERE id = ?", (mp_id,))
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(404, "Registro não encontrado")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 # ============================================================
