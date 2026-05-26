@@ -211,7 +211,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS documentos (
           id                TEXT PRIMARY KEY,
           bem_id            TEXT NOT NULL REFERENCES bens(cod_interno) ON DELETE CASCADE,
-          tipo              TEXT NOT NULL CHECK (tipo IN ('crlv','ipva','seguro')),
+          tipo              TEXT NOT NULL,  -- crlv, ipva, seguro, vistoria, foto, outro
           upload_id         TEXT,
           filename_original TEXT,
           vencimento        TEXT,
@@ -258,6 +258,27 @@ def init_db() -> None:
     for col, sql in bens_migrations:
         if col not in bcols:
             cur.execute(sql)
+
+    # migration: remove CHECK antigo de documentos (pra aceitar vistoria/foto/outro)
+    drow = cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='documentos'").fetchone()
+    if drow and drow["sql"] and "CHECK" in drow["sql"] and "tipo IN" in drow["sql"]:
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys=OFF")
+        cur.executescript("""
+            CREATE TABLE documentos_new (
+              id TEXT PRIMARY KEY,
+              bem_id TEXT NOT NULL REFERENCES bens(cod_interno) ON DELETE CASCADE,
+              tipo TEXT NOT NULL, upload_id TEXT, filename_original TEXT,
+              vencimento TEXT, observacao TEXT, criado_por INTEGER,
+              criado_por_nome TEXT, criado_em TEXT NOT NULL, ativo INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO documentos_new SELECT id, bem_id, tipo, upload_id, filename_original,
+              vencimento, observacao, criado_por, criado_por_nome, criado_em, ativo FROM documentos;
+            DROP TABLE documentos;
+            ALTER TABLE documentos_new RENAME TO documentos;
+            CREATE INDEX IF NOT EXISTS idx_doc_bem ON documentos(bem_id, tipo, ativo);
+        """)
+        conn.execute("PRAGMA foreign_keys=ON")
 
     # backfill codigo_patrimonial: PAT-VEI-NNN (veiculo) / PAT-EQP-NNN (equipamento)
     falta_codigo = cur.execute(
@@ -1477,9 +1498,9 @@ def listar_documentos(
     if not veic:
         raise HTTPException(404, "Veículo não encontrado")
     docs = _documentos_do_veiculo(bem_id, incluir_historico)
-    # garante os 3 tipos no retorno (placeholder se não cadastrado)
+    # garante os tipos com validade no retorno (placeholder se não cadastrado)
     presentes = {d["type"] for d in docs if d["ativo"]}
-    for tipo in ("crlv", "ipva", "seguro"):
+    for tipo in ("crlv", "ipva", "seguro", "vistoria"):
         if tipo not in presentes:
             docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
     return {"vehicle_id": bem_id, "documentos": docs}
@@ -1495,14 +1516,16 @@ async def adicionar_documento(
     authorization: Optional[str] = Header(None),
 ):
     """
-    Adiciona/renova um documento (crlv, ipva ou seguro).
-    Renovação: o documento anterior do mesmo tipo vira histórico (ativo=0).
+    Adiciona/renova documento ou foto.
+    Docs com vencimento (crlv/ipva/seguro/vistoria): renovação — o anterior do
+    mesmo tipo vira histórico (ativo=0). Fotos/outros: múltiplos coexistem.
     Se for CRLV com vencimento, atualiza também veiculos.vencimento_crlv.
     """
     user = auth_check(authorization)
     require_role(user, "patrimonio:cadastrar")
-    if tipo not in ("crlv", "ipva", "seguro"):
-        raise HTTPException(422, "tipo deve ser crlv, ipva ou seguro")
+    tipos_validos = ("crlv", "ipva", "seguro", "vistoria", "foto", "outro")
+    if tipo not in tipos_validos:
+        raise HTTPException(422, f"tipo deve ser um de: {', '.join(tipos_validos)}")
     if vencimento:
         try:
             date.fromisoformat(vencimento)
@@ -1522,11 +1545,13 @@ async def adicionar_documento(
 
     ts = now_iso()
     doc_id = uuid.uuid4().hex
+    eh_renovavel = tipo in ("crlv", "ipva", "seguro", "vistoria")
     conn = db()
     cur = conn.cursor()
-    # renovação — documento anterior do mesmo tipo vira histórico
-    cur.execute("UPDATE documentos SET ativo = 0 WHERE bem_id = ? AND tipo = ? AND ativo = 1",
-                (bem_id, tipo))
+    # renovação só pra documentos com validade; fotos/outros coexistem
+    if eh_renovavel:
+        cur.execute("UPDATE documentos SET ativo = 0 WHERE bem_id = ? AND tipo = ? AND ativo = 1",
+                    (bem_id, tipo))
     cur.execute("""
         INSERT INTO documentos (id, bem_id, tipo, upload_id, filename_original,
                                 vencimento, observacao, criado_por, criado_por_nome, criado_em, ativo)
@@ -1559,10 +1584,26 @@ def fleet_documents(vehicle_id: str, authorization: Optional[str] = Header(None)
         raise HTTPException(404, "Veículo não encontrado")
     docs = _documentos_do_veiculo(vehicle_id, incluir_historico=False)
     presentes = {d["type"] for d in docs}
-    for tipo in ("crlv", "ipva", "seguro"):
+    for tipo in ("crlv", "ipva", "seguro", "vistoria"):
         if tipo not in presentes:
             docs.append({"type": tipo, "status": "nao_cadastrado", "ativo": True})
     return {"vehicle_id": vehicle_id, "placa": row["placa"], "documents": docs}
+
+
+@app.delete("/api/patrimonio/documentos/{doc_id}")
+def remover_documento(doc_id: str, authorization: Optional[str] = Header(None)):
+    """Remove um documento/foto (hard delete do registro; arquivo fica no disco)."""
+    user = auth_check(authorization)
+    require_role(user, "patrimonio:cadastrar")
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM documentos WHERE id = ?", (doc_id,))
+    if cur.rowcount == 0:
+        conn.close()
+        raise HTTPException(404, "Documento não encontrado")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.post("/api/patrimonio/veiculos/{bem_id}/reativar")

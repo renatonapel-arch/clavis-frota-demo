@@ -110,6 +110,9 @@
           <option value="">Status: todos</option>
           <option>ativo</option><option>manutencao</option><option>vencido</option><option>baixado</option>
         </select>
+        <button onclick="exportarCSV()" class="px-3 py-2 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50 flex items-center gap-1">
+          <i data-lucide="download" class="w-4 h-4"></i> Exportar
+        </button>
       </div>
 
       <!-- skeleton loading (item 6) -->
@@ -143,20 +146,21 @@
         <table class="w-full text-sm">
           <thead class="bg-slate-50 text-xs uppercase text-slate-500">
             <tr>
-              <th class="text-left px-4 py-3">Cód.</th>
-              <th class="text-left px-4 py-3">Placa</th>
-              <th class="text-left px-4 py-3">Modelo</th>
-              <th class="text-left px-4 py-3">Filial</th>
-              <th class="text-left px-4 py-3">CRLV vence</th>
-              <th class="text-left px-4 py-3">KM atual</th>
+              <th onclick="ordenarPor('codigo_patrimonial')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">Cód. ⇅</th>
+              <th onclick="ordenarPor('placa')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">Placa ⇅</th>
+              <th onclick="ordenarPor('modelo')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">Modelo ⇅</th>
+              <th onclick="ordenarPor('filial_id')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">Filial ⇅</th>
+              <th onclick="ordenarPor('vencimento_crlv')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">CRLV vence ⇅</th>
+              <th onclick="ordenarPor('km_atual')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">KM atual ⇅</th>
               <th class="text-left px-4 py-3">Última troca óleo</th>
-              <th class="text-left px-4 py-3">Status</th>
+              <th onclick="ordenarPor('estado_operacional')" class="text-left px-4 py-3 cursor-pointer hover:text-slate-700 select-none">Status ⇅</th>
             </tr>
           </thead>
           <tbody id="tbody" class="divide-y divide-slate-100"></tbody>
         </table>
       </div>
       <div id="cards" class="md:hidden grid grid-cols-1 gap-3"></div>
+      <div id="paginacao"></div>
       <div id="empty" class="hidden bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center">
         <i data-lucide="truck" class="w-12 h-12 mx-auto text-slate-300 mb-3"></i>
         <div class="text-slate-700 font-medium">Nenhum veículo cadastrado ainda</div>
@@ -385,6 +389,10 @@ let TOKEN = '';
 let USER  = null;
 let UPLOAD_PREVIEW = null;
 let MANUAL_MODE = false;
+let LISTA = [];           // veículos carregados (filtrados) — base p/ ordenação/paginação/export
+let SORT_COL = null, SORT_DIR = 1;
+let PAGINA = 1;
+const POR_PAGINA = 20;
 let FILIAIS = [];
 let CENTROS = [];
 
@@ -597,7 +605,9 @@ async function reload() {
     }).length;
 
     renderKPIs({total: veiculos.length, ativos, vencendo_30d: vencendo, vencidos, troca_pendente: trocaPendente});
-    renderRows(veiculos);
+    LISTA = veiculos;
+    PAGINA = 1;
+    aplicarOrdemEPagina();
   } catch (e) {
     console.error(e);
   } finally {
@@ -605,6 +615,72 @@ async function reload() {
     $('tabela-wrap').classList.remove('hidden');
     $('cards').classList.remove('hidden');
   }
+}
+
+function ordenarPor(col) {
+  if (SORT_COL === col) SORT_DIR = -SORT_DIR; else { SORT_COL = col; SORT_DIR = 1; }
+  aplicarOrdemEPagina();
+}
+
+function aplicarOrdemEPagina() {
+  let arr = [...LISTA];
+  if (SORT_COL) {
+    arr.sort((a,b) => {
+      let x = a[SORT_COL], y = b[SORT_COL];
+      if (x == null) x = ''; if (y == null) y = '';
+      if (typeof x === 'number' && typeof y === 'number') return (x - y) * SORT_DIR;
+      return String(x).localeCompare(String(y), 'pt-BR', {numeric:true}) * SORT_DIR;
+    });
+  }
+  const totalPag = Math.max(1, Math.ceil(arr.length / POR_PAGINA));
+  if (PAGINA > totalPag) PAGINA = totalPag;
+  const slice = arr.slice((PAGINA-1)*POR_PAGINA, PAGINA*POR_PAGINA);
+  renderRows(slice);
+  renderPaginacao(arr.length, totalPag);
+}
+
+function renderPaginacao(total, totalPag) {
+  const el = $('paginacao');
+  if (!el) return;
+  if (total <= POR_PAGINA) { el.innerHTML = ''; return; }
+  const ini = (PAGINA-1)*POR_PAGINA + 1, fim = Math.min(PAGINA*POR_PAGINA, total);
+  el.innerHTML = `
+    <div class="flex items-center justify-between mt-3 text-sm">
+      <span class="text-slate-500">${ini}–${fim} de ${total}</span>
+      <div class="flex gap-1">
+        <button onclick="irPagina(${PAGINA-1})" ${PAGINA<=1?'disabled':''} class="px-3 py-1.5 border border-slate-200 rounded-lg ${PAGINA<=1?'opacity-40':'hover:bg-slate-50'}">‹</button>
+        <span class="px-3 py-1.5">${PAGINA}/${totalPag}</span>
+        <button onclick="irPagina(${PAGINA+1})" ${PAGINA>=totalPag?'disabled':''} class="px-3 py-1.5 border border-slate-200 rounded-lg ${PAGINA>=totalPag?'opacity-40':'hover:bg-slate-50'}">›</button>
+      </div>
+    </div>`;
+}
+
+function irPagina(p) { PAGINA = p; aplicarOrdemEPagina(); }
+
+function exportarCSV() {
+  if (!LISTA.length) { toast('Nada para exportar.'); return; }
+  const cols = [
+    ['codigo_patrimonial','Codigo'], ['placa','Placa'], ['marca','Marca'], ['modelo','Modelo'],
+    ['ano','Ano'], ['filial_id','Filial'], ['centro_custo','Centro custo'], ['estado_operacional','Estado'],
+    ['km_atual','KM'], ['vencimento_crlv','CRLV vence'], ['valor_aquisicao','Valor aquisicao'],
+    ['data_aquisicao','Data aquisicao'], ['status','Status'],
+  ];
+  const esc = (v) => {
+    if (v == null) return '';
+    const s = String(v);
+    return /[",;\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const header = cols.map(c => c[1]).join(';');
+  const linhas = LISTA.map(v => cols.map(c => esc(v[c[0]])).join(';'));
+  // BOM pro Excel reconhecer acentos
+  const csv = '﻿' + [header, ...linhas].join('\r\n');
+  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `frota_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  toast(`${LISTA.length} veículos exportados.`);
 }
 
 function renderKPIs(k) {
@@ -686,7 +762,7 @@ function renderRows(rows) {
   lucide.createIcons();
 }
 
-const DOC_LABELS = {crlv: 'CRLV', ipva: 'IPVA', seguro: 'Seguro'};
+const DOC_LABELS = {crlv: 'CRLV', ipva: 'IPVA', seguro: 'Seguro', vistoria: 'Vistoria'};
 
 function statusDocBadge(status) {
   const map = {
@@ -757,8 +833,10 @@ async function abrirDetalhe(id) {
       ? `<button onclick="abrirModalTransferir('${id}', ${veic.filial_id})" class="text-slate-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="arrow-left-right" class="w-4 h-4"></i> Transferir</button>
          <button onclick="abrirModalBaixa('${id}')" class="text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="dollar-sign" class="w-4 h-4"></i> Vender / Baixar</button>`
       : `<button onclick="reativarVeiculo('${id}')" class="text-emerald-600 hover:bg-emerald-50 px-3 py-1.5 rounded-lg text-sm font-medium flex items-center gap-1"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Reativar</button>`;
-    const ordem = {crlv:0, ipva:1, seguro:2};
-    const docsOrdenados = [...docs.documents].sort((a,b)=>(ordem[a.type]??9)-(ordem[b.type]??9));
+    const ordem = {crlv:0, ipva:1, seguro:2, vistoria:3};
+    const fotos = docs.documents.filter(d => d.type === 'foto' && d.arquivo_disponivel);
+    const docsOrdenados = docs.documents.filter(d => ['crlv','ipva','seguro','vistoria'].includes(d.type))
+      .sort((a,b)=>(ordem[a.type]??9)-(ordem[b.type]??9));
 
     $('detalhe-content').innerHTML = `
       <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4" id="header-card">
@@ -822,6 +900,15 @@ async function abrirDetalhe(id) {
             ${docsOrdenados.map(d => renderDocRow(veic.id, d)).join('')}
           </div>
         </div>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold uppercase text-slate-500 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Fotos</h3>
+          <button onclick="abrirModalFoto('${veic.id}')" class="text-violet-600 hover:bg-violet-50 px-2 py-1 rounded text-xs font-medium flex items-center gap-1"><i data-lucide="plus" class="w-3.5 h-3.5"></i> Adicionar foto</button>
+        </div>
+        ${fotos.length ? `<div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">${fotos.map(f => renderFoto(f, veic.id)).join('')}</div>`
+                       : '<div class="text-sm text-slate-400">Nenhuma foto. Clique em "Adicionar foto" pra registrar o estado do veículo.</div>'}
       </div>
 
       <div class="bg-white rounded-xl border border-slate-200 p-6">
@@ -926,6 +1013,77 @@ function renderTimeline(movs) {
         </div>
       </div>`;
   }).join('') + `</div>`;
+}
+
+function renderFoto(f, bemId) {
+  // usa ?token= pra carregar a imagem direto no <img> (endpoint aceita token na query)
+  const src = `${API}/api/patrimonio/uploads/${f.upload_id}?token=${encodeURIComponent(TOKEN)}&inline=true`;
+  return `
+    <div class="relative group aspect-square rounded-lg overflow-hidden border border-slate-200 bg-slate-100">
+      <img src="${src}" class="w-full h-full object-cover cursor-pointer" loading="lazy"
+           onclick="verDocumento('${f.upload_id}', true)" alt="foto do veículo" />
+      <button onclick="removerFoto('${f.id}','${bemId}')" title="remover foto"
+              class="absolute top-1 right-1 bg-white/90 hover:bg-red-50 text-red-600 rounded-full p-1 opacity-0 group-hover:opacity-100 transition">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>`;
+}
+
+function abrirModalFoto(bemId) {
+  abrirModal('Adicionar foto', `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-500">Foto (JPG ou PNG · máx 10MB)</label>
+        <input id="mf-file" type="file" accept=".jpg,.jpeg,.png" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-500">Legenda (opcional)</label>
+        <input id="mf-obs" type="text" placeholder="ex: lateral direita, avaria no para-choque" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1" />
+      </div>
+      <div id="mf-erro" class="hidden text-xs text-red-600"></div>
+      <div class="flex gap-2 pt-1">
+        <button onclick="fecharModal()" class="flex-1 border border-slate-300 hover:bg-slate-50 py-2 rounded-lg text-sm">Cancelar</button>
+        <button id="mf-salvar" onclick="salvarFoto('${bemId}')" class="flex-1 bg-violet-600 hover:bg-violet-700 text-white py-2 rounded-lg text-sm font-medium">Enviar</button>
+      </div>
+    </div>
+  `);
+}
+
+async function salvarFoto(bemId) {
+  const file = $('mf-file').files[0];
+  if (!file) { $('mf-erro').textContent = 'Selecione uma foto.'; $('mf-erro').classList.remove('hidden'); return; }
+  const btn = $('mf-salvar'); btn.disabled = true; btn.classList.add('opacity-50');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('tipo', 'foto');
+    const obs = $('mf-obs').value.trim();
+    if (obs) fd.append('observacao', obs);
+    const r = await fetch(API + '/api/patrimonio/veiculos/' + bemId + '/documentos', {
+      method: 'POST', headers: {'Authorization': 'Bearer ' + TOKEN}, body: fd,
+    });
+    if (!r.ok) throw new Error((await r.text()).substring(0, 200));
+    toast('Foto adicionada.');
+    fecharModal();
+    await invalidateApiCache();
+    await abrirDetalhe(bemId);
+  } catch (e) {
+    $('mf-erro').textContent = 'Erro: ' + e.message;
+    $('mf-erro').classList.remove('hidden');
+    btn.disabled = false; btn.classList.remove('opacity-50');
+  }
+}
+
+async function removerFoto(docId, bemId) {
+  if (!confirm('Remover esta foto?')) return;
+  try {
+    await fetch(API + '/api/patrimonio/documentos/' + docId, {
+      method: 'DELETE', headers: {'Authorization': 'Bearer ' + TOKEN},
+    }).then(r => { if (!r.ok) throw new Error(r.statusText); });
+    toast('Foto removida.');
+    await invalidateApiCache();
+    await abrirDetalhe(bemId);
+  } catch (e) { alert('Erro: ' + e.message); }
 }
 
 async function reativarVeiculo(id) {
