@@ -412,6 +412,10 @@
 
 <script>
 const API = window.location.origin;
+// Tela de login desativada (modo teste): entra direto como admin via este PIN.
+// Para reativar o login individual, troque LOGIN_DESATIVADO para false.
+const LOGIN_DESATIVADO = true;
+const AUTO_PIN = '1234';
 let TOKEN = '';
 let USER  = null;
 let UPLOAD_PREVIEW = null;
@@ -530,7 +534,26 @@ async function startApp() {
       return;
     } catch { sessionStorage.clear(); TOKEN=''; USER=null; }
   }
-  // sem sessão → mostra login
+  // tela de login desativada → entra direto (modo teste)
+  if (LOGIN_DESATIVADO) {
+    try {
+      const r = await fetch(API + '/api/auth/login', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({pin: AUTO_PIN})
+      });
+      if (!r.ok) throw new Error('auto-login HTTP ' + r.status);
+      const data = await r.json();
+      TOKEN = data.token; USER = data.user;
+      sessionStorage.setItem('cv_token', TOKEN);
+      sessionStorage.setItem('cv_user', JSON.stringify(USER));
+      $('login').classList.add('hidden');
+      iniciar();
+      return;
+    } catch (e) {
+      console.error('auto-login falhou, caindo no login manual:', e);
+    }
+  }
+  // fallback (ou login ativado) → mostra login
   $('login').classList.remove('hidden');
   $('login-pin').focus();
   lucide.createIcons();
