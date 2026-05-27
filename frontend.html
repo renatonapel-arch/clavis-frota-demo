@@ -2266,14 +2266,21 @@ async function salvarVeiculo() {
 // Bens NÃO-veículo (máquina / informática / móveis / imóvel)
 // ============================================================
 let BEM_CAT = null;
+let _editPipefyId = null;   // preserva o vínculo com o Pipefy ao editar (atributos é substituído)
 const MP_LABELS = {eletrica:'Elétrica', hidraulica:'Hidráulica', ar_condicionado:'Ar-condicionado',
                    dedetizacao:'Dedetização', alvara_bombeiros:'Alvará/Bombeiros', outro:'Outro'};
 const ATTR_LABELS = {numero_serie:'Nº de série', fabricante:'Fabricante', horimetro:'Horímetro (h)',
   garantia_ate:'Garantia até', posse:'Em posse de', licenca_software:'Licença de software',
-  localizacao:'Localização', tipo_imovel:'Tipo', matricula:'Matrícula', area_m2:'Área',
-  inscricao_iptu:'Inscrição IPTU', endereco:'Endereço', locador:'Locador', valor_aluguel:'Aluguel',
-  vigencia_inicio:'Vigência início', vigencia_fim:'Vigência fim', indice_reajuste:'Índice de reajuste',
-  dia_vencimento:'Dia do vencimento'};
+  localizacao:'Localização', tipo_imovel:'Situação', matricula:'Matrícula', area_m2:'Área',
+  inscricao_iptu:'Inscrição IPTU / cadastro prefeitura', endereco:'Endereço', cidade:'Cidade',
+  titular:'Titularidade', tipo_construcao:'Tipo', situacao_financeira:'Quitado / Financiado',
+  locador:'Locador', locatario:'Locatário', valor_aluguel:'Aluguel (pago)',
+  valor_aluguel_recebido:'Aluguel (recebido)', vigencia_inicio:'Vigência início',
+  vigencia_fim:'Vigência fim', indice_reajuste:'Índice de reajuste', dia_vencimento:'Dia do vencimento'};
+const TIPO_IMOVEL_LABEL = {proprio_uso:'Próprio (uso próprio)', proprio_alugado:'Próprio (alugado a terceiros)',
+  terceiros_alugado:'Alugado de terceiros', proprio:'Próprio', alugado:'Alugado'};
+// chaves de sistema que não aparecem na tela de detalhe
+const ATTR_OCULTOS = new Set(['pipefy_id']);
 
 function _esc(s){ return String(s).replace(/"/g,'&quot;'); }
 function fld(id, label, type, val){
@@ -2297,23 +2304,33 @@ function atributosFieldsHtml(cat, a){
     + fld('a-licenca_software','Licença de software','text',a.licenca_software);
   if (cat === 'moveis') return fld('a-localizacao','Localização (sala/setor)','text',a.localizacao);
   if (cat === 'imovel'){
-    const tip = a.tipo_imovel || 'proprio';
+    const tip = a.tipo_imovel || 'proprio_uso';
+    const terceiros = (tip === 'terceiros_alugado' || tip === 'alugado');
+    const sel = (id,label,opts,val)=>`<div class="mb-3"><label class="text-xs text-slate-500">${label}</label>
+      <select id="${id}" class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm mt-1">
+      <option value=""></option>${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select></div>`;
     return `
-      <div class="mb-3"><label class="text-xs text-slate-500">Tipo de imóvel</label>
-        <div class="flex gap-4 mt-1 text-sm">
-          <label class="flex items-center gap-1"><input type="radio" name="tipo_imovel" value="proprio" ${tip!=='alugado'?'checked':''} onchange="onTipoImovel()"> Próprio (imobilizado)</label>
-          <label class="flex items-center gap-1"><input type="radio" name="tipo_imovel" value="alugado" ${tip==='alugado'?'checked':''} onchange="onTipoImovel()"> Alugado</label>
+      <div class="mb-3"><label class="text-xs text-slate-500">Situação do imóvel</label>
+        <div class="flex flex-col gap-1 mt-1 text-sm">
+          <label class="flex items-center gap-2"><input type="radio" name="tipo_imovel" value="proprio_uso" ${tip==='proprio_uso'||tip==='proprio'?'checked':''} onchange="onTipoImovel()"> Próprio — uso próprio <span class="text-xs text-slate-400">(imobiliza, deprecia)</span></label>
+          <label class="flex items-center gap-2"><input type="radio" name="tipo_imovel" value="proprio_alugado" ${tip==='proprio_alugado'?'checked':''} onchange="onTipoImovel()"> Próprio — alugado a terceiros <span class="text-xs text-slate-400">(imobiliza + recebe aluguel)</span></label>
+          <label class="flex items-center gap-2"><input type="radio" name="tipo_imovel" value="terceiros_alugado" ${terceiros?'checked':''} onchange="onTipoImovel()"> Alugado de terceiros <span class="text-xs text-slate-400">(não imobiliza, Napel paga)</span></label>
         </div></div>
-      <div id="imovel-proprio" class="${tip==='alugado'?'hidden':''}">
+      ${grid2(fld('a-endereco','Endereço','text',a.endereco), fld('a-cidade','Cidade','text',a.cidade))}
+      ${sel('a-tipo_construcao','Tipo (galpão/casa/...)',['Galpão','Casa','Apartamento','Terreno','Outro'], a.tipo_construcao)}
+      <div id="imovel-dono">
         ${grid2(fld('a-matricula','Matrícula','text',a.matricula), fld('a-area_m2','Área (m²)','number',a.area_m2),
-                fld('a-inscricao_iptu','Inscrição IPTU','text',a.inscricao_iptu), fld('a-endereco','Endereço','text',a.endereco))}
+                fld('a-inscricao_iptu','Inscrição IPTU / prefeitura','text',a.inscricao_iptu), fld('a-titular','Titularidade','text',a.titular))}
+        ${sel('a-situacao_financeira','Quitado / Financiado',['Quitado','Financiado'], a.situacao_financeira)}
       </div>
-      <div id="imovel-alugado" class="${tip==='alugado'?'':'hidden'}">
-        ${fld('a-endereco_al','Endereço','text',a.endereco)}
-        ${grid2(fld('a-locador','Locador','text',a.locador), fld('a-valor_aluguel','Aluguel (R$)','number',a.valor_aluguel),
+      <div id="imovel-recebe">
+        ${grid2(fld('a-locatario','Locatário (quem aluga de nós)','text',a.locatario), fld('a-valor_aluguel_recebido','Aluguel recebido (R$)','number',a.valor_aluguel_recebido))}
+      </div>
+      <div id="imovel-paga">
+        ${grid2(fld('a-locador','Locador (de quem alugamos)','text',a.locador), fld('a-valor_aluguel','Aluguel pago (R$)','number',a.valor_aluguel),
                 fld('a-vigencia_inicio','Vigência início','date',a.vigencia_inicio), fld('a-vigencia_fim','Vigência fim','date',a.vigencia_fim),
                 fld('a-indice_reajuste','Índice de reajuste','text',a.indice_reajuste), fld('a-dia_vencimento','Dia do vencimento','number',a.dia_vencimento))}
-        <div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-3">Imóvel alugado <strong>não é imobilizado</strong> e <strong>não deprecia</strong>. Entra para controle de contrato de locação e manutenção predial.</div>
+        <div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-3">Alugado de terceiros <strong>não imobiliza</strong> e <strong>não deprecia</strong>. Entra para controle de contrato + manutenção predial.</div>
       </div>`;
   }
   return '';
@@ -2327,19 +2344,25 @@ function coletarAtributos(cat){
   else if (cat==='informatica'){ put('numero_serie',v('a-numero_serie')); put('fabricante',v('a-fabricante')); put('garantia_ate',v('a-garantia_ate')); put('posse',v('a-posse')); put('licenca_software',v('a-licenca_software')); }
   else if (cat==='moveis'){ put('localizacao',v('a-localizacao')); }
   else if (cat==='imovel'){
-    const sel=document.querySelector('input[name="tipo_imovel"]:checked'); const tipo=sel?sel.value:'proprio'; o.tipo_imovel=tipo;
-    if (tipo==='proprio'){ put('matricula',v('a-matricula')); put('area_m2',fv('a-area_m2')); put('inscricao_iptu',v('a-inscricao_iptu')); put('endereco',v('a-endereco')); }
-    else { put('endereco',v('a-endereco_al')); put('locador',v('a-locador')); put('valor_aluguel',fv('a-valor_aluguel')); put('vigencia_inicio',v('a-vigencia_inicio')); put('vigencia_fim',v('a-vigencia_fim')); put('indice_reajuste',v('a-indice_reajuste')); put('dia_vencimento',iv('a-dia_vencimento')); }
+    const sel=document.querySelector('input[name="tipo_imovel"]:checked'); const tipo=sel?sel.value:'proprio_uso'; o.tipo_imovel=tipo;
+    const terceiros=(tipo==='terceiros_alugado'||tipo==='alugado');
+    put('endereco',v('a-endereco')); put('cidade',v('a-cidade')); put('tipo_construcao',v('a-tipo_construcao'));
+    if (!terceiros){ put('matricula',v('a-matricula')); put('area_m2',fv('a-area_m2')); put('inscricao_iptu',v('a-inscricao_iptu')); put('titular',v('a-titular')); put('situacao_financeira',v('a-situacao_financeira')); }
+    if (tipo==='proprio_alugado'){ put('locatario',v('a-locatario')); put('valor_aluguel_recebido',fv('a-valor_aluguel_recebido')); }
+    if (terceiros){ put('locador',v('a-locador')); put('valor_aluguel',fv('a-valor_aluguel')); put('vigencia_inicio',v('a-vigencia_inicio')); put('vigencia_fim',v('a-vigencia_fim')); put('indice_reajuste',v('a-indice_reajuste')); put('dia_vencimento',iv('a-dia_vencimento')); }
   }
   return o;
 }
 function onTipoImovel(){
   const sel=document.querySelector('input[name="tipo_imovel"]:checked'); if(!sel) return;
-  const alugado = sel.value==='alugado';
-  const p=$('imovel-proprio'), al=$('imovel-alugado');
-  if(p) p.classList.toggle('hidden', alugado);
-  if(al) al.classList.toggle('hidden', !alugado);
-  ['aq-bloco','aq-titulo'].forEach(id=>{ const e=$(id); if(e) e.classList.toggle('hidden', alugado); });
+  const tipo=sel.value;
+  const terceiros=(tipo==='terceiros_alugado'||tipo==='alugado');
+  const show=(id,cond)=>{ const e=$(id); if(e) e.classList.toggle('hidden', !cond); };
+  show('imovel-dono', !terceiros);          // dados de imóvel próprio
+  show('imovel-recebe', tipo==='proprio_alugado');  // Napel recebe aluguel
+  show('imovel-paga', terceiros);           // Napel paga aluguel
+  // só "alugado de terceiros" não imobiliza → some o bloco de aquisição/depreciação
+  ['aq-bloco','aq-titulo'].forEach(id=>{ const e=$(id); if(e) e.classList.toggle('hidden', terceiros); });
 }
 
 // ----- escolher categoria (botão "Novo bem") -----
@@ -2431,14 +2454,17 @@ function fmtAttr(k,v){
   if (v==null||v==='') return '—';
   if (k==='garantia_ate'||k.indexOf('vigencia')===0) return fmtDate(v);
   if (k==='valor_aluguel') return fmtMoeda(v);
-  if (k==='tipo_imovel') return v==='alugado'?'Alugado':'Próprio';
+  if (k==='tipo_imovel') return TIPO_IMOVEL_LABEL[v] || v;
+  if (k==='valor_aluguel_recebido') return fmtMoeda(v);
   if (k==='area_m2') return v+' m²';
   return v;
 }
 function renderAtributosCard(bem){
-  const a = bem.atributos||{}; const keys=Object.keys(a);
+  const a = bem.atributos||{}; const keys=Object.keys(a).filter(k=>!ATTR_OCULTOS.has(k));
   if (!keys.length) return '';
-  const titulo = (bem.categoria==='imovel' && a.tipo_imovel==='alugado') ? 'Contrato de locação' : 'Detalhes';
+  const ti = a.tipo_imovel;
+  const titulo = (bem.categoria==='imovel' && (ti==='terceiros_alugado'||ti==='alugado'||ti==='proprio_alugado'))
+    ? 'Imóvel & contrato de locação' : 'Detalhes';
   return `<div class="bg-white rounded-xl border border-slate-200 p-6 mb-4">
     <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> ${titulo}</h3>
     <dl class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
@@ -2499,7 +2525,8 @@ async function abrirDetalheBem(id){
     const outros = docs.filter(d=>d.type!=='foto' && d.upload_id);
     const movs = movResp.movimentacoes||[];
     const dep = bem.depreciacao;
-    const alugado = bem.atributos && bem.atributos.tipo_imovel==='alugado';
+    const ti = (bem.atributos||{}).tipo_imovel;
+    const naoImobiliza = (ti==='terceiros_alugado' || ti==='alugado');
     const statusBadge = bem.ativo ? '<span class="status-ativo text-xs px-2 py-0.5 rounded-full font-medium">ativo</span>'
                                   : '<span class="status-baixado text-xs px-2 py-0.5 rounded-full font-medium">baixado</span>';
     const acaoBtns = bem.ativo
@@ -2516,7 +2543,7 @@ async function abrirDetalheBem(id){
           <div class="flex justify-between"><dt class="text-slate-500">Nota fiscal</dt><dd>${bem.nf_numero||'—'}</dd></div>
         </dl></div>`;
     let depCard;
-    if (alugado) depCard = `<div class="bg-white rounded-xl border border-dashed border-slate-300 p-6 flex items-center justify-center text-center"><div class="text-sm text-slate-500"><i data-lucide="info" class="w-6 h-6 mx-auto mb-2"></i>Imóvel <strong>alugado</strong> — não é imobilizado, <strong>não deprecia</strong>.</div></div>`;
+    if (naoImobiliza) depCard = `<div class="bg-white rounded-xl border border-dashed border-slate-300 p-6 flex items-center justify-center text-center"><div class="text-sm text-slate-500"><i data-lucide="info" class="w-6 h-6 mx-auto mb-2"></i>Imóvel <strong>alugado de terceiros</strong> — não é imobilizado, <strong>não deprecia</strong>.</div></div>`;
     else if (dep) depCard = `<div class="bg-white rounded-xl border border-slate-200 p-6">
         <h3 class="text-sm font-semibold uppercase text-slate-500 mb-3 flex items-center gap-2"><i data-lucide="trending-down" class="w-4 h-4"></i> Depreciação (${dep.metodo})</h3>
         <dl class="space-y-2 text-sm">
@@ -2577,7 +2604,8 @@ async function iniciarEdicaoBem(id){
   const bem = await api('/api/patrimonio/bens/'+id);
   const filialOpts = FILIAIS.map(f=>`<option value="${f.filial}" ${f.filial===bem.filial?'selected':''}>${f.sigla} — ${f.filial}</option>`).join('');
   const ccOpts = CENTROS.filter(c=>c.filial===bem.filial).map(c=>`<option value="${c.codigo}" ${c.codigo===bem.centro_custo?'selected':''}>${c.nome}</option>`).join('');
-  const alugado = bem.categoria==='imovel' && (bem.atributos||{}).tipo_imovel==='alugado';
+  _editPipefyId = (bem.atributos||{}).pipefy_id || null;
+  const naoImobiliza = bem.categoria==='imovel' && ['terceiros_alugado','alugado'].includes((bem.atributos||{}).tipo_imovel);
   $('detalhe-content').innerHTML = `
     <div class="bg-white rounded-xl border border-slate-200 p-6 max-w-3xl">
       <h3 class="text-sm font-semibold uppercase text-slate-500 mb-4 flex items-center gap-2"><i data-lucide="edit-2" class="w-4 h-4"></i> Editar ${CAT_LABEL_JS[bem.categoria]||'bem'}</h3>
@@ -2592,7 +2620,7 @@ async function iniciarEdicaoBem(id){
       <div class="text-xs font-semibold uppercase text-slate-500 mt-3 mb-2">Atributos</div>
       ${atributosFieldsHtml(bem.categoria, bem.atributos||{})}
       <div class="text-xs font-semibold uppercase text-slate-500 mt-4 mb-2" id="aq-titulo">Aquisição & patrimônio</div>
-      <div id="aq-bloco" class="${alugado?'hidden':''}">
+      <div id="aq-bloco" class="${naoImobiliza?'hidden':''}">
       ${grid2(fld('eb-data','Data de aquisição','date',bem.data_aquisicao), fld('eb-valor','Valor de aquisição (R$)','number',bem.valor_aquisicao),
               fld('eb-forn','Fornecedor','text',bem.fornecedor), fld('eb-nf','NF nº','text',bem.nf_numero),
               fld('eb-vida','Vida útil (meses)','number',bem.vida_util_meses), fld('eb-residual','Valor residual (R$)','number',bem.valor_residual))}
@@ -2614,8 +2642,10 @@ async function salvarEdicaoBem(id, categoria){
   const v=(x)=>{const e=$(x); return e&&e.value!==''?e.value:null;};
   const iv=(x)=>{const y=v(x); return y==null?null:parseInt(y);};
   const fv=(x)=>{const y=v(x); return y==null?null:parseFloat(y);};
+  const at = coletarAtributos(categoria);
+  if (_editPipefyId) at.pipefy_id = _editPipefyId;   // mantém vínculo com o Pipefy
   const body = { descricao:v('eb-descricao'), filial:iv('eb-filial'), centro_custo:$('eb-cc').value,
-                 estado_operacional:$('eb-estado').value, atributos:coletarAtributos(categoria) };
+                 estado_operacional:$('eb-estado').value, atributos:at };
   if (!$('aq-bloco').classList.contains('hidden')){
     body.data_aquisicao=v('eb-data'); body.valor_aquisicao=fv('eb-valor'); body.fornecedor=v('eb-forn');
     body.nf_numero=v('eb-nf'); body.vida_util_meses=iv('eb-vida'); body.valor_residual=fv('eb-residual');

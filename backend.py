@@ -704,11 +704,12 @@ def validar_dados(d: dict, categoria: str = "veiculo", exige_crlv: bool = True) 
     if categoria in CATEGORIAS_NAO_VEICULO and not (d.get("descricao") or "").strip():
         erros.append("informe a descrição do bem")
 
-    # imóvel: precisa declarar se é próprio ou alugado
+    # imóvel: situação = próprio uso / próprio alugado a terceiros / alugado de terceiros
+    # (proprio/alugado mantidos por compatibilidade com dados legados)
     if categoria == "imovel":
         ti = ((d.get("atributos") or {}).get("tipo_imovel") or "").strip()
-        if ti not in ("proprio", "alugado"):
-            erros.append("imóvel: informe se é próprio ou alugado")
+        if ti not in ("proprio_uso", "proprio_alugado", "terceiros_alugado", "proprio", "alugado"):
+            erros.append("imóvel: informe a situação (próprio uso / próprio alugado / alugado de terceiros)")
     return erros
 
 
@@ -2201,10 +2202,11 @@ def cadastrar_bem(
         raise HTTPException(422, {"erros": erros})
 
     atributos = data.get("atributos") or {}
-    alugado = (categoria == "imovel" and atributos.get("tipo_imovel") == "alugado")
-    # imóvel ALUGADO não é imobilizado: não deprecia
+    # só imóvel ALUGADO DE TERCEIROS não imobiliza (próprio — mesmo alugado a terceiros — deprecia)
+    nao_imobiliza = (categoria == "imovel"
+                     and atributos.get("tipo_imovel") in ("terceiros_alugado", "alugado"))
     vida_util = data.get("vida_util_meses")
-    if alugado:
+    if nao_imobiliza:
         vida_util, metodo = None, "nao_aplicavel"
     else:
         if vida_util is None:
