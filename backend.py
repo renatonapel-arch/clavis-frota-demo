@@ -49,11 +49,14 @@ try:
 except ImportError:
     pass
 
+# Migrado 2026-06: Anthropic Claude Vision -> Gemini Flash 2.5
+# (PDF e imagem ambos suportados; Gemini converte PDF internamente)
 try:
-    import anthropic
-    _anthropic_available = True
+    from google import genai
+    from google.genai import types as genai_types
+    _gemini_available = True
 except ImportError:
-    _anthropic_available = False
+    _gemini_available = False
 
 # Magic bytes validation (5. da auditoria — bloqueia exe disfarçado de pdf/jpg)
 try:
@@ -90,12 +93,12 @@ DEMO_USER_ROLES = {"patrimonio:cadastrar", "patrimonio:listar", "patrimonio:reat
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
 ALLOWED_MIME = {"application/pdf", "image/jpeg", "image/jpg", "image/png"}
 
-# Vision toggle
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-USE_REAL_VISION = bool(ANTHROPIC_API_KEY) and _anthropic_available and \
+# Vision toggle — Gemini (migrado 2026-06)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+USE_REAL_VISION = bool(GEMINI_API_KEY) and _gemini_available and \
     os.getenv("USE_REAL_VISION", "true").lower() == "true"
-VISION_MODEL = os.getenv("VISION_MODEL", "claude-haiku-4-5")
-_vision_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if USE_REAL_VISION else None
+VISION_MODEL = os.getenv("VISION_MODEL", "gemini-2.5-flash")
+_vision_client = genai.Client(api_key=GEMINI_API_KEY) if USE_REAL_VISION else None
 
 # Alertas automáticos de vencimento via WhatsApp (Evolution API)
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
@@ -494,63 +497,44 @@ CRLV_OUTPUT_SCHEMA = {
 
 def call_claude_vision_real(file_bytes: bytes, mime_type: str) -> dict:
     """
-    Chama Claude Vision real (Opus 4.7).
-    System prompt cacheado (prefix invariante = ~90% off em chamadas subsequentes).
-    Schema JSON estruturado garante shape da resposta.
+    Chama Gemini Vision real (Flash 2.5).
+    Suporta PDF e imagem nativamente. Cache automatico por prefixo.
+    Schema JSON estruturado via responseSchema garante shape da resposta.
+
+    Mantem o nome historico `call_claude_vision_real` (chamado em varios lugares).
     """
-    data_b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
-    if mime_type == "application/pdf":
-        media_block = {
-            "type": "document",
-            "source": {"type": "base64", "media_type": "application/pdf", "data": data_b64},
-        }
-    else:
-        # normaliza image/jpg -> image/jpeg
-        mt = "image/jpeg" if mime_type in ("image/jpg",) else mime_type
-        media_block = {
-            "type": "image",
-            "source": {"type": "base64", "media_type": mt, "data": data_b64},
-        }
+    # Normaliza mime
+    mt = "image/jpeg" if mime_type in ("image/jpg",) else mime_type
 
     last_err = None
     for tentativa in range(3):
         try:
-            response = _vision_client.messages.create(
+            # Gemini structured output via response_schema
+            response = _vision_client.models.generate_content(
                 model=VISION_MODEL,
-                max_tokens=2048,
-                system=[{
-                    "type": "text",
-                    "text": CRLV_SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }],
-                output_config={"format": {"type": "json_schema", "schema": CRLV_OUTPUT_SCHEMA}},
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        media_block,
-                        {"type": "text", "text": "Extraia os dados deste CRLV e retorne o JSON."},
-                    ],
-                }],
+                contents=[
+                    genai_types.Part.from_bytes(data=file_bytes, mime_type=mt),
+                    "Extraia os dados deste CRLV e retorne o JSON.\n\n" + CRLV_SYSTEM_PROMPT,
+                ],
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=2048,
+                    response_mime_type="application/json",
+                    response_schema=CRLV_OUTPUT_SCHEMA,
+                ),
             )
-            # cache hit info (debug)
-            usage = getattr(response, "usage", None)
+            usage = getattr(response, "usage_metadata", None)
             if usage:
-                print(f"[vision {now_brt_display()}] in={usage.input_tokens} out={usage.output_tokens} "
-                      f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)} "
-                      f"cache_write={getattr(usage, 'cache_creation_input_tokens', 0)}")
-
-            for block in response.content:
-                if block.type == "text":
-                    return json.loads(block.text)
-            raise RuntimeError("Vision retornou resposta sem bloco de texto")
-        except (anthropic.APIConnectionError, anthropic.APIStatusError) as e:
+                print(f"[vision {now_brt_display()}] in={getattr(usage,'prompt_token_count','?')} "
+                      f"out={getattr(usage,'candidates_token_count','?')}")
+            return json.loads(response.text or "{}")
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Vision retornou JSON inválido: {e}") from e
+        except Exception as e:
             last_err = e
             if tentativa < 2:
                 time.sleep(2 ** tentativa)
                 continue
             raise
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"Vision retornou JSON inválido: {e}") from e
 
     raise RuntimeError(f"Vision falhou após 3 tentativas: {last_err}")
 
